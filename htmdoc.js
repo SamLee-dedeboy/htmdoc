@@ -528,6 +528,29 @@
 
   // ---- Rich formatting helpers ----
 
+  var BLOCK_TAGS = { P: 1, H1: 1, H2: 1, H3: 1, H4: 1, H5: 1, H6: 1, BLOCKQUOTE: 1, PRE: 1, LI: 1, DIV: 1 };
+
+  function blockOf(node) {
+    var el = node && (node.nodeType === 1 ? node : node.parentElement);
+    while (el && el !== document.body) {
+      if (BLOCK_TAGS[el.tagName]) return el;
+      el = el.parentElement;
+    }
+    return null;
+  }
+
+  // HTML source often wraps paragraph text across lines; those newlines are
+  // invisible in a normal block but become hard line breaks inside <pre> —
+  // and converting back then bakes them in as <br>. Collapse them to plain
+  // spaces (exactly what the block currently renders) before going to code.
+  function normalizeSourceWhitespace(el) {
+    var walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null, false);
+    var n;
+    while ((n = walker.nextNode())) {
+      if (/[\n\r\t]/.test(n.nodeValue)) n.nodeValue = n.nodeValue.replace(/\s+/g, ' ');
+    }
+  }
+
   // Toolbar widgets like <select> and color inputs steal the text selection;
   // remember it on mousedown and restore it before running the command.
   var savedRange = null;
@@ -834,6 +857,18 @@
     block.addEventListener('mousedown', rememberSelection);
     block.addEventListener('change', function () {
       restoreSelection();
+      var s = window.getSelection();
+      var blk = s.rangeCount ? blockOf(s.getRangeAt(0).startContainer) : null;
+      if (block.value === 'PRE' && blk && blk.tagName !== 'PRE') {
+        // going to code: collapse invisible source-formatting newlines first,
+        // then re-anchor the caret (the text nodes just changed under it)
+        normalizeSourceWhitespace(blk);
+        var r = document.createRange();
+        r.selectNodeContents(blk);
+        r.collapse(true);
+        s.removeAllRanges();
+        s.addRange(r);
+      }
       document.execCommand('formatBlock', false, '<' + block.value + '>');
       scheduleSave();
     });

@@ -28,11 +28,7 @@
 </head>
 <body>
   <h1>Every element, and what the editor does with it</h1>
-  <p>This page collects the HTML elements you'll meet in real documents and
-    uses each one to show what this tool can and cannot edit. Colored notes
-    say what to expect: <span style="color:#34c759">green</span> = fully
-    editable, <span style="color:#e3a008">amber</span> = partly,
-    <span style="color:#e0245e">red</span> = out of scope.</p>
+  <p>This page collects the HTML elements you'll meet in real documents and uses each one to show what this tool can and cannot edit. Colored notes say what to expect: <span style="color:#34c759">green</span> = fully editable, <span style="color:#e3a008">amber</span> = partly, <span style="color:#e0245e">red</span> = out of scope.</p>
 
   <h2>Text content — the sweet spot</h2>
   <div class="note works">Everything here is plain DOM text: click anywhere and type.
@@ -86,7 +82,7 @@ function greet() { return "hello"; }</code></pre>
     Toggle Editing: OFF and everything behaves normally again.</div>
   <p>
     <button onclick="document.getElementById('btn-out').textContent = 'clicked ' + (++window.__clicks || (window.__clicks = 1)) + '×'">Click me</button>
-    <span id="btn-out">clicked 1×</span><br>
+    <span id="btn-out">not clicked yet</span><br>
     <input type="button" value="input button"> <input type="submit" value="submit button">
   </p>
   <details>
