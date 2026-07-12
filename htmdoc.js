@@ -85,7 +85,6 @@
       '#' + TOOLBAR_ID + ' .me-color{position:relative;display:inline-flex;align-items:center;justify-content:center;',
       'width:28px;height:24px;border-radius:6px;background:rgba(255,255,255,.12);cursor:pointer;font-weight:700;font-size:13px;}',
       '#' + TOOLBAR_ID + ' .me-color:hover{background:rgba(255,255,255,.24);}',
-      '#' + TOOLBAR_ID + ' .me-color .me-bar{position:absolute;left:6px;right:6px;bottom:3px;height:3px;border-radius:2px;}',
       '#' + TOOLBAR_ID + ' .me-color.me-hl .me-glyph{color:#222;padding:0 4px;border-radius:3px;line-height:1.25;}',
       '#' + TOOLBAR_ID + ' .me-color input[type="color"]{position:absolute;top:0;left:0;width:100%;height:100%;opacity:0;cursor:pointer;border:none;padding:0;}',
       '#' + TOOLBAR_ID + ' .me-tablegrp{display:none;gap:4px;margin-left:6px;padding-left:8px;',
@@ -885,7 +884,7 @@
     row.appendChild(fmtButton('U', 'underline', 'Underline'));
     row.appendChild(fmtButton('S', 'strikeThrough', 'Strikethrough'));
 
-    // Text color: "A" with a colored underline bar. Highlight: "A" on a
+    // Text color: the "A" itself is colored. Highlight: "A" sits on a
     // colored swatch. The indicator doubles as the current-color display —
     // the convention Word and Google Docs use.
     function colorControl(command, initial, titleText, isHighlight) {
@@ -895,16 +894,9 @@
       var glyph = document.createElement('span');
       glyph.className = 'me-glyph';
       glyph.textContent = 'A';
+      if (isHighlight) glyph.style.background = initial;
+      else glyph.style.color = initial;
       wrap.appendChild(glyph);
-      var bar = null;
-      if (isHighlight) {
-        glyph.style.background = initial;
-      } else {
-        bar = document.createElement('span');
-        bar.className = 'me-bar';
-        bar.style.background = initial;
-        wrap.appendChild(bar);
-      }
       var input = document.createElement('input');
       input.type = 'color';
       input.value = initial;
@@ -913,8 +905,8 @@
       input.addEventListener('change', function () {
         restoreSelection();
         document.execCommand(command, false, input.value);
-        if (bar) bar.style.background = input.value;
-        else glyph.style.background = input.value;
+        if (isHighlight) glyph.style.background = input.value;
+        else glyph.style.color = input.value;
         scheduleSave();
       });
       return wrap;
