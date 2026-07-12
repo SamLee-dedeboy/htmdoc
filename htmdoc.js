@@ -82,7 +82,12 @@
       '#' + TOOLBAR_ID + ' .me-row2 button{padding:3px 7px;font-size:12px;}',
       '#' + TOOLBAR_ID + ' select{font:inherit;font-size:12px;background:rgba(255,255,255,.12);color:#fff;',
       'border:none;border-radius:6px;padding:3px 4px;cursor:pointer;}',
-      '#' + TOOLBAR_ID + ' input[type="color"]{width:24px;height:24px;border:none;background:none;padding:0;cursor:pointer;}',
+      '#' + TOOLBAR_ID + ' .me-color{position:relative;display:inline-flex;align-items:center;justify-content:center;',
+      'width:28px;height:24px;border-radius:6px;background:rgba(255,255,255,.12);cursor:pointer;font-weight:700;font-size:13px;}',
+      '#' + TOOLBAR_ID + ' .me-color:hover{background:rgba(255,255,255,.24);}',
+      '#' + TOOLBAR_ID + ' .me-color .me-bar{position:absolute;left:6px;right:6px;bottom:3px;height:3px;border-radius:2px;}',
+      '#' + TOOLBAR_ID + ' .me-color.me-hl .me-glyph{color:#222;padding:0 4px;border-radius:3px;line-height:1.25;}',
+      '#' + TOOLBAR_ID + ' .me-color input[type="color"]{position:absolute;top:0;left:0;width:100%;height:100%;opacity:0;cursor:pointer;border:none;padding:0;}',
       '#' + TOOLBAR_ID + ' .me-tablegrp{display:none;gap:4px;margin-left:6px;padding-left:8px;',
       'border-left:1px solid rgba(255,255,255,.2);}',
       '#' + TOOLBAR_ID + ' .me-tablegrp.me-on{display:flex;}',
@@ -873,27 +878,49 @@
       scheduleSave();
     });
     row.appendChild(block);
+    api._blockSelect = block;
 
     row.appendChild(fmtButton('B', 'bold', 'Bold'));
     row.appendChild(fmtButton('I', 'italic', 'Italic'));
     row.appendChild(fmtButton('U', 'underline', 'Underline'));
     row.appendChild(fmtButton('S', 'strikeThrough', 'Strikethrough'));
 
-    function colorInput(command, value, titleText) {
-      var c = document.createElement('input');
-      c.type = 'color';
-      c.value = value;
-      c.title = titleText;
-      c.addEventListener('mousedown', rememberSelection);
-      c.addEventListener('change', function () {
+    // Text color: "A" with a colored underline bar. Highlight: "A" on a
+    // colored swatch. The indicator doubles as the current-color display —
+    // the convention Word and Google Docs use.
+    function colorControl(command, initial, titleText, isHighlight) {
+      var wrap = document.createElement('span');
+      wrap.className = 'me-color' + (isHighlight ? ' me-hl' : '');
+      wrap.title = titleText;
+      var glyph = document.createElement('span');
+      glyph.className = 'me-glyph';
+      glyph.textContent = 'A';
+      wrap.appendChild(glyph);
+      var bar = null;
+      if (isHighlight) {
+        glyph.style.background = initial;
+      } else {
+        bar = document.createElement('span');
+        bar.className = 'me-bar';
+        bar.style.background = initial;
+        wrap.appendChild(bar);
+      }
+      var input = document.createElement('input');
+      input.type = 'color';
+      input.value = initial;
+      wrap.appendChild(input);
+      wrap.addEventListener('mousedown', rememberSelection);
+      input.addEventListener('change', function () {
         restoreSelection();
-        document.execCommand(command, false, c.value);
+        document.execCommand(command, false, input.value);
+        if (bar) bar.style.background = input.value;
+        else glyph.style.background = input.value;
         scheduleSave();
       });
-      return c;
+      return wrap;
     }
-    row.appendChild(colorInput('foreColor', '#d70015', 'Text color (select text first)'));
-    row.appendChild(colorInput('hiliteColor', '#ffe45c', 'Highlight color (select text first)'));
+    row.appendChild(colorControl('foreColor', '#d70015', 'Text color (select text first)', false));
+    row.appendChild(colorControl('hiliteColor', '#ffe45c', 'Highlight color (select text first)', true));
 
     row.appendChild(save);
     row.appendChild(status);
@@ -908,8 +935,8 @@
 
     var row2 = document.createElement('div');
     row2.className = 'me-row me-row2';
-    row2.appendChild(fmtButton('• List', 'insertUnorderedList', 'Bulleted list'));
-    row2.appendChild(fmtButton('1. List', 'insertOrderedList', 'Numbered list'));
+    row2.appendChild(fmtButton('•', 'insertUnorderedList', 'Bulleted list'));
+    row2.appendChild(fmtButton('1.', 'insertOrderedList', 'Numbered list'));
     row2.appendChild(fmtButton('⇤', 'outdent', 'Outdent'));
     row2.appendChild(fmtButton('⇥', 'indent', 'Indent'));
     row2.appendChild(fmtButton('L', 'justifyLeft', 'Align left'));
@@ -1028,6 +1055,18 @@
       var cell = currentCell();
       api._cell = cell;
       if (api._tableGrp) api._tableGrp.classList.toggle('me-on', !!cell && api.enabled);
+      // Reflect the current block's style in the paragraph-style dropdown.
+      if (api._blockSelect) {
+        var s = window.getSelection();
+        var anchor = s && s.anchorNode;
+        var el = anchor && (anchor.nodeType === 1 ? anchor : anchor.parentElement);
+        if (el && !insideEditorUi(el)) {
+          var blk = blockOf(el);
+          var tag = blk ? blk.tagName : '';
+          api._blockSelect.value =
+            (tag === 'H1' || tag === 'H2' || tag === 'H3' || tag === 'BLOCKQUOTE' || tag === 'PRE') ? tag : 'P';
+        }
+      }
     });
     document.addEventListener('keydown', function (e) {
       if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 's') {
