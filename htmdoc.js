@@ -33,6 +33,7 @@
   var TOOLBAR_ID = 'me-toolbar';
   var STYLE_ID = 'me-style';
   var SVGEDIT_ID = 'me-svgedit';
+  var PANEL_ID = 'me-panel';
 
   // The save server address. When this script is loaded FROM the server
   // (the injected <script src="http://127.0.0.1:<port>/htmdoc.js">),
@@ -77,6 +78,27 @@
       'background:rgba(28,28,30,.92);color:#fff;font:13px/1.4 -apple-system,system-ui,sans-serif;',
       'box-shadow:0 4px 16px rgba(0,0,0,.25);user-select:none;-webkit-user-select:none;}',
       '#' + TOOLBAR_ID + ' .me-row{display:flex;gap:6px;align-items:center;}',
+      '#' + TOOLBAR_ID + ' .me-row2{margin-top:6px;gap:4px;}',
+      '#' + TOOLBAR_ID + ' .me-row2 button{padding:3px 7px;font-size:12px;}',
+      '#' + TOOLBAR_ID + ' select{font:inherit;font-size:12px;background:rgba(255,255,255,.12);color:#fff;',
+      'border:none;border-radius:6px;padding:3px 4px;cursor:pointer;}',
+      '#' + TOOLBAR_ID + ' input[type="color"]{width:24px;height:24px;border:none;background:none;padding:0;cursor:pointer;}',
+      '#' + TOOLBAR_ID + ' .me-tablegrp{display:none;gap:4px;margin-left:6px;padding-left:8px;',
+      'border-left:1px solid rgba(255,255,255,.2);}',
+      '#' + TOOLBAR_ID + ' .me-tablegrp.me-on{display:flex;}',
+      '#' + PANEL_ID + '{position:fixed;z-index:2147483647;background:rgba(28,28,30,.96);color:#fff;',
+      'font:13px/1.5 -apple-system,system-ui,sans-serif;border-radius:10px;padding:10px 12px;',
+      'box-shadow:0 6px 24px rgba(0,0,0,.35);display:flex;flex-direction:column;gap:6px;min-width:280px;}',
+      '#' + PANEL_ID + ' label{display:flex;align-items:center;gap:8px;font-size:12px;color:rgba(255,255,255,.8);}',
+      '#' + PANEL_ID + ' input[type="text"]{flex:1;font:inherit;padding:3px 6px;border-radius:5px;',
+      'border:1px solid rgba(255,255,255,.25);background:rgba(255,255,255,.08);color:#fff;outline:none;}',
+      '#' + PANEL_ID + ' .me-actions{display:flex;gap:6px;justify-content:flex-end;margin-top:2px;}',
+      '#' + PANEL_ID + ' button{all:unset;cursor:pointer;padding:3px 12px;border-radius:6px;',
+      'background:rgba(255,255,255,.14);font:inherit;}',
+      '#' + PANEL_ID + ' button:hover{background:rgba(255,255,255,.26);}',
+      '#' + PANEL_ID + ' button.me-primary{background:#0a84ff;}',
+      '#' + PANEL_ID + ' .me-list{max-height:220px;overflow:auto;display:flex;flex-direction:column;gap:4px;font-size:12px;}',
+      '#' + PANEL_ID + ' .me-vrow{display:flex;gap:12px;align-items:center;justify-content:space-between;}',
       '#' + TOOLBAR_ID + ' .me-legend{display:none;gap:12px;align-items:center;',
       'font-size:11px;color:rgba(255,255,255,.75);margin-top:6px;padding-top:5px;',
       'border-top:1px solid rgba(255,255,255,.15);}',
@@ -105,7 +127,8 @@
       'body.me-editing .me-generated{outline:2px dashed rgba(224,36,94,.8);outline-offset:2px;}',
       'body.me-editing img,body.me-editing input,body.me-editing textarea,',
       'body.me-editing select{outline:2px dashed rgba(217,144,10,.75);outline-offset:2px;}',
-      'body.me-editing #me-svgedit{outline:none;}',
+      'body.me-editing #me-svgedit,body.me-editing #' + TOOLBAR_ID + ' input,',
+      'body.me-editing #' + TOOLBAR_ID + ' select,body.me-editing #' + PANEL_ID + ' input{outline:none;}',
       // SVG labels often disable pointer-events; re-enable them while editing
       // so they can be clicked and edited via the overlay input.
       'body.me-editing svg text,body.me-editing svg text *{pointer-events:all;cursor:text;}'
@@ -126,7 +149,7 @@
     // script[data-me-injected] is the tag the server adds while serving the
     // page — it must never be written into the file on disk.
     var kill = root.querySelectorAll(
-      '#' + TOOLBAR_ID + ', #' + STYLE_ID + ', #' + SVGEDIT_ID + ', #me-chip, script[data-me-injected]'
+      '#' + TOOLBAR_ID + ', #' + STYLE_ID + ', #' + SVGEDIT_ID + ', #' + PANEL_ID + ', #me-chip, script[data-me-injected]'
     );
     for (var i = 0; i < kill.length; i++) kill[i].parentNode.removeChild(kill[i]);
     // Strip the scope indicators (hover titles, generated-content classes) —
@@ -357,29 +380,27 @@
     input.select();
   }
 
-  // While editing, clicking a link would navigate away and lose edits.
-  // Block plain clicks on links; Cmd/Ctrl+click still follows.
-  // Clicks on SVG text open the overlay editor instead.
+  // While editing, plain clicks repurpose to "edit this": controls and SVG
+  // labels get the overlay, links get the text/URL editor, images get the
+  // alt/replace editor. Cmd/Ctrl+click follows links; Alt/Option+click
+  // activates controls. The editor's own UI is exempt.
   function guardClicks(e) {
     if (!api.enabled) return;
     var t = e.target;
     if (!t || !t.closest) return;
+    if (insideEditorUi(t)) return; // toolbar/panels always just work
     if (e.metaKey || e.ctrlKey) {
       // contentEditable suppresses link navigation even for modifier clicks,
       // so follow the link ourselves — in a new tab, keeping the edits.
       var link = t.closest('a[href]');
-      if (link && !link.closest('#' + TOOLBAR_ID)) {
+      if (link) {
         e.preventDefault();
         e.stopPropagation();
         window.open(link.href, '_blank');
       }
       return;
     }
-    // While editing, a plain click on a control edits its label;
-    // Alt/Option+click activates it normally instead. The editor's own
-    // toolbar buttons are exempt — they must always just work.
     var ctl = t.closest('button, summary, input[type="button"], input[type="submit"], input[type="reset"]');
-    if (ctl && ctl.closest('#' + TOOLBAR_ID)) ctl = null;
     if (ctl) {
       if (e.altKey) return; // let the control do its thing
       e.preventDefault();
@@ -395,8 +416,17 @@
       return;
     }
     var a = t.closest('a[href]');
-    if (a && !a.closest('#' + TOOLBAR_ID)) {
+    if (a) {
       e.preventDefault();
+      e.stopPropagation();
+      openLinkEditor(a);
+      return;
+    }
+    var img = t.closest('img');
+    if (img) {
+      e.preventDefault();
+      e.stopPropagation();
+      openImageEditor(img);
     }
   }
 
@@ -411,7 +441,7 @@
     iframe: 'htmdoc: a separate embedded document — the editor cannot reach inside it',
     embed: 'htmdoc: embedded content — not editable',
     object: 'htmdoc: embedded content — not editable',
-    img: 'htmdoc: image — you can delete it, but its content is not editable',
+    img: 'htmdoc: image — click to replace it or edit its alt text; the picture itself is not editable',
     input: 'htmdoc: values typed or picked here are not saved (surrounding labels are editable)',
     textarea: 'htmdoc: text typed here is not saved (only the original content persists)',
     select: 'htmdoc: the chosen option is not saved (surrounding labels are editable)'
@@ -420,7 +450,7 @@
   function insideEditorUi(el) {
     for (var p = el; p; p = p.parentElement) {
       var id = p.id || '';
-      if (id === TOOLBAR_ID || id === SVGEDIT_ID || id === 'me-chip') return true;
+      if (id === TOOLBAR_ID || id === SVGEDIT_ID || id === PANEL_ID || id === 'me-chip') return true;
     }
     return false;
   }
@@ -496,6 +526,264 @@
       .catch(function () {});
   }
 
+  // ---- Rich formatting helpers ----
+
+  // Toolbar widgets like <select> and color inputs steal the text selection;
+  // remember it on mousedown and restore it before running the command.
+  var savedRange = null;
+  function rememberSelection() {
+    var s = window.getSelection();
+    if (s && s.rangeCount) savedRange = s.getRangeAt(0).cloneRange();
+  }
+  function restoreSelection() {
+    if (!savedRange) return;
+    var s = window.getSelection();
+    s.removeAllRanges();
+    s.addRange(savedRange);
+  }
+
+  // ---- Floating panel (link/image editors, find & replace, history) ----
+
+  function closePanel() {
+    var p = document.getElementById(PANEL_ID);
+    if (p) p.remove();
+  }
+
+  function openPanel(left, top) {
+    closePanel();
+    var p = document.createElement('div');
+    p.id = PANEL_ID;
+    p.setAttribute('contenteditable', 'false');
+    p.style.left = Math.max(8, Math.min(left, window.innerWidth - 310)) + 'px';
+    p.style.top = Math.max(8, Math.min(top, window.innerHeight - 200)) + 'px';
+    p.addEventListener('keydown', function (e) {
+      e.stopPropagation();
+      if (e.key === 'Escape') closePanel();
+    });
+    document.body.appendChild(p);
+    return p;
+  }
+
+  function panelField(panel, labelText, value) {
+    var label = document.createElement('label');
+    label.appendChild(document.createTextNode(labelText));
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.value = value || '';
+    label.appendChild(input);
+    panel.appendChild(label);
+    return input;
+  }
+
+  function panelActions(panel, primaryText, onPrimary) {
+    var row = document.createElement('div');
+    row.className = 'me-actions';
+    var cancel = document.createElement('button');
+    cancel.textContent = 'Cancel';
+    cancel.addEventListener('click', closePanel);
+    var ok = document.createElement('button');
+    ok.className = 'me-primary';
+    ok.textContent = primaryText;
+    ok.addEventListener('click', onPrimary);
+    row.appendChild(cancel);
+    row.appendChild(ok);
+    panel.appendChild(row);
+    panel.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' && e.target.tagName === 'INPUT' && e.target.type === 'text') {
+        e.preventDefault();
+        onPrimary();
+      }
+    });
+  }
+
+  // Click a link while editing: edit its text and URL in place.
+  function openLinkEditor(a) {
+    var rect = a.getBoundingClientRect();
+    var panel = openPanel(rect.left, rect.bottom + 8);
+    var text = panelField(panel, 'Text', a.textContent);
+    var url = panelField(panel, 'URL', a.getAttribute('href') || '');
+    panelActions(panel, 'Apply', function () {
+      a.textContent = text.value;
+      a.setAttribute('href', url.value);
+      scheduleSave();
+      closePanel();
+    });
+    text.focus();
+    text.select();
+  }
+
+  // Click an image while editing: edit its alt text or swap the image
+  // (embedded as a data URI so the file stays self-contained).
+  function openImageEditor(img) {
+    var rect = img.getBoundingClientRect();
+    var panel = openPanel(rect.left, rect.bottom + 8);
+    var alt = panelField(panel, 'Alt text', img.getAttribute('alt') || '');
+    var fileLabel = document.createElement('label');
+    fileLabel.appendChild(document.createTextNode('Replace'));
+    var file = document.createElement('input');
+    file.type = 'file';
+    file.accept = 'image/*';
+    fileLabel.appendChild(file);
+    panel.appendChild(fileLabel);
+    var pendingSrc = null;
+    file.addEventListener('change', function () {
+      var f = file.files && file.files[0];
+      if (!f) return;
+      var reader = new FileReader();
+      reader.onload = function () { pendingSrc = reader.result; };
+      reader.readAsDataURL(f);
+    });
+    panelActions(panel, 'Apply', function () {
+      img.setAttribute('alt', alt.value);
+      if (pendingSrc) img.setAttribute('src', pendingSrc);
+      scheduleSave();
+      closePanel();
+    });
+    alt.focus();
+  }
+
+  // ---- Find & replace ----
+
+  function replaceAllText(find, repl) {
+    if (!find) return 0;
+    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+    var nodes = [];
+    var n;
+    while ((n = walker.nextNode())) {
+      var parent = n.parentElement;
+      if (!parent || insideEditorUi(parent)) continue;
+      var tag = parent.tagName.toLowerCase();
+      if (tag === 'script' || tag === 'style') continue;
+      if (n.nodeValue.indexOf(find) !== -1) nodes.push(n);
+    }
+    var count = 0;
+    for (var i = 0; i < nodes.length; i++) {
+      count += nodes[i].nodeValue.split(find).length - 1;
+      nodes[i].nodeValue = nodes[i].nodeValue.split(find).join(repl);
+    }
+    if (count) scheduleSave();
+    return count;
+  }
+
+  function openFindPanel() {
+    var rect = api._bar ? api._bar.getBoundingClientRect()
+                        : { left: window.innerWidth - 320, bottom: 12 };
+    var panel = openPanel(rect.left, rect.bottom + 8);
+    var find = panelField(panel, 'Find', '');
+    var repl = panelField(panel, 'Replace', '');
+    var result = document.createElement('div');
+    result.style.cssText = 'font-size:12px;color:rgba(255,255,255,.7);min-height:16px;';
+    panel.appendChild(result);
+    panelActions(panel, 'Replace all', function () {
+      var count = replaceAllText(find.value, repl.value);
+      result.textContent = count ? count + ' replaced' : 'No matches';
+    });
+    find.focus();
+  }
+
+  // ---- Version history (server keeps the last saves) ----
+
+  function openHistoryPanel() {
+    if (!api.serverOk) { setStatus('No save server'); return; }
+    var rect = api._bar ? api._bar.getBoundingClientRect()
+                        : { left: window.innerWidth - 320, bottom: 12 };
+    var panel = openPanel(rect.left, rect.bottom + 8);
+    var list = document.createElement('div');
+    list.className = 'me-list';
+    list.textContent = 'Loading…';
+    panel.appendChild(list);
+    var actions = document.createElement('div');
+    actions.className = 'me-actions';
+    var close = document.createElement('button');
+    close.textContent = 'Close';
+    close.addEventListener('click', closePanel);
+    actions.appendChild(close);
+    panel.appendChild(actions);
+    fetch(SERVER + '/history?path=' + encodeURIComponent(filePath()))
+      .then(function (r) { return r.json(); })
+      .then(function (out) {
+        list.textContent = '';
+        var versions = (out && out.versions) || [];
+        if (!versions.length) {
+          list.textContent = 'No earlier versions yet — they accumulate as you save.';
+          return;
+        }
+        versions.forEach(function (v) {
+          var vrow = document.createElement('div');
+          vrow.className = 'me-vrow';
+          var label = document.createElement('span');
+          label.textContent = new Date(v.mtime * 1000).toLocaleString() +
+            ' · ' + Math.max(1, Math.round(v.size / 1024)) + ' KB';
+          var btn = document.createElement('button');
+          btn.textContent = 'Restore';
+          btn.addEventListener('click', function () {
+            fetch(SERVER + '/restore', {
+              method: 'POST',
+              headers: { 'Content-Type': 'text/plain' },
+              body: JSON.stringify({ path: filePath(), version: v.version })
+            })
+              .then(function (r2) { return r2.json(); })
+              .then(function (res) {
+                if (res && res.ok) location.reload();
+                else setStatus('Restore failed');
+              })
+              .catch(function () { setStatus('Restore failed'); });
+          });
+          vrow.appendChild(label);
+          vrow.appendChild(btn);
+          list.appendChild(vrow);
+        });
+      })
+      .catch(function () { list.textContent = 'Could not load history.'; });
+  }
+
+  // ---- Table operations (shown when the caret is inside a table) ----
+
+  function currentCell() {
+    var s = window.getSelection();
+    var node = s && s.anchorNode;
+    var el = node && (node.nodeType === 1 ? node : node.parentElement);
+    while (el) {
+      var t = el.tagName && el.tagName.toLowerCase();
+      if (t === 'td' || t === 'th') return insideEditorUi(el) ? null : el;
+      el = el.parentElement;
+    }
+    return null;
+  }
+
+  function tableOp(kind) {
+    var cell = api._cell;
+    if (!cell) return;
+    var row = cell.parentElement;
+    var table = cell.closest('table');
+    if (!row || !table) return;
+    var idx = cell.cellIndex;
+    if (kind === 'addRow') {
+      var clone = row.cloneNode(true);
+      for (var i = 0; i < clone.cells.length; i++) clone.cells[i].innerHTML = '';
+      row.parentNode.insertBefore(clone, row.nextSibling);
+    } else if (kind === 'delRow') {
+      row.parentNode.removeChild(row);
+      api._cell = null;
+      if (api._tableGrp) api._tableGrp.classList.remove('me-on');
+    } else if (kind === 'addCol') {
+      for (var r = 0; r < table.rows.length; r++) {
+        var cells = table.rows[r].cells;
+        var ref = cells[Math.min(idx, cells.length - 1)];
+        if (!ref) continue;
+        var nc = document.createElement(ref.tagName);
+        ref.parentNode.insertBefore(nc, cells[idx] ? cells[idx].nextSibling : null);
+      }
+    } else if (kind === 'delCol') {
+      for (var r2 = 0; r2 < table.rows.length; r2++) {
+        if (table.rows[r2].cells[idx]) table.rows[r2].deleteCell(idx);
+      }
+      api._cell = null;
+      if (api._tableGrp) api._tableGrp.classList.remove('me-on');
+    }
+    scheduleSave();
+  }
+
   // ---- Toolbar ----
 
   function buildToolbar() {
@@ -533,9 +821,45 @@
     var row = document.createElement('div');
     row.className = 'me-row';
     row.appendChild(toggle);
+
+    var block = document.createElement('select');
+    block.title = 'Paragraph style';
+    [['P', 'Text'], ['H1', 'Heading 1'], ['H2', 'Heading 2'], ['H3', 'Heading 3'],
+     ['BLOCKQUOTE', 'Quote'], ['PRE', 'Code']].forEach(function (opt) {
+      var o = document.createElement('option');
+      o.value = opt[0];
+      o.textContent = opt[1];
+      block.appendChild(o);
+    });
+    block.addEventListener('mousedown', rememberSelection);
+    block.addEventListener('change', function () {
+      restoreSelection();
+      document.execCommand('formatBlock', false, '<' + block.value + '>');
+      scheduleSave();
+    });
+    row.appendChild(block);
+
     row.appendChild(fmtButton('B', 'bold', 'Bold'));
     row.appendChild(fmtButton('I', 'italic', 'Italic'));
     row.appendChild(fmtButton('U', 'underline', 'Underline'));
+    row.appendChild(fmtButton('S', 'strikeThrough', 'Strikethrough'));
+
+    function colorInput(command, value, titleText) {
+      var c = document.createElement('input');
+      c.type = 'color';
+      c.value = value;
+      c.title = titleText;
+      c.addEventListener('mousedown', rememberSelection);
+      c.addEventListener('change', function () {
+        restoreSelection();
+        document.execCommand(command, false, c.value);
+        scheduleSave();
+      });
+      return c;
+    }
+    row.appendChild(colorInput('foreColor', '#d70015', 'Text color (select text first)'));
+    row.appendChild(colorInput('hiliteColor', '#ffe45c', 'Highlight color (select text first)'));
+
     row.appendChild(save);
     row.appendChild(status);
 
@@ -546,6 +870,46 @@
     minBtn.addEventListener('click', function () { api.minimize(); });
     row.appendChild(minBtn);
     bar.appendChild(row);
+
+    var row2 = document.createElement('div');
+    row2.className = 'me-row me-row2';
+    row2.appendChild(fmtButton('• List', 'insertUnorderedList', 'Bulleted list'));
+    row2.appendChild(fmtButton('1. List', 'insertOrderedList', 'Numbered list'));
+    row2.appendChild(fmtButton('⇤', 'outdent', 'Outdent'));
+    row2.appendChild(fmtButton('⇥', 'indent', 'Indent'));
+    row2.appendChild(fmtButton('L', 'justifyLeft', 'Align left'));
+    row2.appendChild(fmtButton('C', 'justifyCenter', 'Align center'));
+    row2.appendChild(fmtButton('R', 'justifyRight', 'Align right'));
+    row2.appendChild(fmtButton('↺', 'undo', 'Undo (Cmd/Ctrl+Z)'));
+    row2.appendChild(fmtButton('↻', 'redo', 'Redo'));
+    row2.appendChild(fmtButton('Tx', 'removeFormat', 'Clear formatting from the selection'));
+
+    var findBtn = document.createElement('button');
+    findBtn.textContent = 'Find';
+    findBtn.title = 'Find & replace text across the whole page';
+    findBtn.addEventListener('click', openFindPanel);
+    row2.appendChild(findBtn);
+
+    var histBtn = document.createElement('button');
+    histBtn.textContent = 'History';
+    histBtn.title = 'Restore an earlier saved version of this file';
+    histBtn.addEventListener('click', openHistoryPanel);
+    row2.appendChild(histBtn);
+
+    var tgrp = document.createElement('span');
+    tgrp.className = 'me-tablegrp';
+    [['+Row', 'addRow', 'Insert a row below'], ['−Row', 'delRow', 'Delete this row'],
+     ['+Col', 'addCol', 'Insert a column to the right'], ['−Col', 'delCol', 'Delete this column']]
+      .forEach(function (op) {
+        var b = document.createElement('button');
+        b.textContent = op[0];
+        b.title = op[2];
+        b.addEventListener('mousedown', function (e) { e.preventDefault(); tableOp(op[1]); });
+        tgrp.appendChild(b);
+      });
+    row2.appendChild(tgrp);
+    bar.appendChild(row2);
+    api._tableGrp = tgrp;
 
     // Legend for the scope outlines — only shown (via CSS) while editing on
     // pages that actually contain outlined elements.
@@ -603,6 +967,8 @@
 
   api.disable = function () {
     closeSvgTextEditor(true);
+    closePanel();
+    if (api._tableGrp) api._tableGrp.classList.remove('me-on');
     document.body.removeAttribute('contenteditable');
     document.body.classList.remove('me-editing');
     api.enabled = false;
@@ -622,6 +988,12 @@
     buildToolbar();
     document.addEventListener('click', guardClicks, true);
     document.body.addEventListener('input', scheduleSave);
+    // Show the table row/column buttons whenever the caret is in a table.
+    document.addEventListener('selectionchange', function () {
+      var cell = currentCell();
+      api._cell = cell;
+      if (api._tableGrp) api._tableGrp.classList.toggle('me-on', !!cell && api.enabled);
+    });
     document.addEventListener('keydown', function (e) {
       if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 's') {
         e.preventDefault();

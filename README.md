@@ -1,6 +1,6 @@
 # htmdoc
 
-**Open any HTML file on your computer, click once, and edit it like a
+**Open any HTML file on your computer and edit it like a
 document.**
 
 Built for people who create and share static HTML with AI agents all the
@@ -45,10 +45,24 @@ case you ever want the original back.
 A small dark toolbar floats in the top-right corner:
 
 ```
-┌──────────────────────────────────────────────────┐
-│ Editing: ON │ B │ I │ U │ Save │  Auto-save: on  │
-└──────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────┐
+│ Editing: ON │ Text ▾ │ B I U S │ 🟥 🟨 │ Save │ Auto-save: on │ – │
+│ • List  1. List  ⇤ ⇥  L C R  ↺ ↻  Tx  Find  History  [table ops] │
+└───────────────────────────────────────────────────────────────┘
 ```
+
+- **Text ▾** turns the current line into a heading, quote, code block, or
+  back to normal text. **B/I/U/S** bold/italicize/underline/strike the
+  selection; the two color squares set text and highlight color.
+- **Lists, indent (⇤ ⇥), alignment (L C R), undo/redo (↺ ↻)**, and **Tx**
+  (clear formatting) work on the selection.
+- **Find** opens find & replace — change a word everywhere on the page at
+  once.
+- **History** lists the last saved versions of the file; one click restores
+  any of them.
+- **Click a link** to edit its text *and* its URL; **click an image** to
+  replace it or edit its alt text; **+Row/−Row/+Col/−Col** appear
+  automatically when your cursor is inside a table.
 
 | Status | Meaning |
 |---|---|
@@ -85,6 +99,10 @@ elements):
   file can't end up half-written.
 - Saved files contain only your page and your edits — no leftover pieces of
   this tool.
+- Beyond the one-time `.bak`, the helper keeps the **last 10 saved versions**
+  of each file in a hidden `.htmdoc-history` folder next to it — the
+  toolbar's **History** button restores any of them (and restoring itself
+  makes a snapshot first, so you can't lose anything).
 
 ## If something isn't working
 

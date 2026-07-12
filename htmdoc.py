@@ -41,8 +41,9 @@ import mimetypes
 import os
 import shutil
 import tempfile
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import quote, unquote
+from urllib.parse import parse_qs, quote, unquote
 
 ROOT = os.getcwd()
 PORT = 8321
@@ -50,6 +51,44 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 EDITOR_JS = os.path.join(HERE, "htmdoc.js")
 
 SKIP_DIRS = {"node_modules", "__pycache__", ".git", ".svn", "venv", ".venv"}
+
+# Rolling version history: before each overwrite, the current file is copied
+# into a hidden sibling folder; the newest HISTORY_KEEP versions are kept.
+HISTORY_DIR = ".htmdoc-history"
+HISTORY_KEEP = 10
+
+
+def save_history(target):
+    """Snapshot the current contents of target into its history folder."""
+    try:
+        hdir = os.path.join(os.path.dirname(target), HISTORY_DIR)
+        os.makedirs(hdir, exist_ok=True)
+        base = os.path.basename(target)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        dest = os.path.join(hdir, "%s.%s" % (base, stamp))
+        if not os.path.exists(dest):
+            shutil.copy2(target, dest)
+        versions = sorted(n for n in os.listdir(hdir) if n.startswith(base + "."))
+        for old in versions[:-HISTORY_KEEP]:
+            os.unlink(os.path.join(hdir, old))
+    except OSError:
+        pass
+
+
+def list_history(target):
+    hdir = os.path.join(os.path.dirname(target), HISTORY_DIR)
+    base = os.path.basename(target)
+    out = []
+    if os.path.isdir(hdir):
+        for name in sorted(os.listdir(hdir), reverse=True):
+            if not name.startswith(base + "."):
+                continue
+            try:
+                st = os.stat(os.path.join(hdir, name))
+            except OSError:
+                continue
+            out.append({"version": name, "mtime": int(st.st_mtime), "size": st.st_size})
+    return out
 
 # Injected into served HTML only — never written to disk. data-me-injected
 # tells the editor to strip this tag when serializing for a save.
@@ -234,6 +273,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(500, {"ok": False, "error": "htmdoc.js not found next to htmdoc.py"})
                 return
             self._send_raw(200, "application/javascript; charset=utf-8", body)
+        elif path == "/history":
+            q = parse_qs(parts[1]) if len(parts) > 1 else {}
+            target = resolve_save_target(q.get("path", [""])[0])
+            if target is None or not os.path.isfile(target):
+                self._send_json(404, {"ok": False, "error": "file not found"})
+            else:
+                self._send_json(200, {"ok": True, "versions": list_history(target)})
         elif path == "/" or path == "/browse" or path.startswith("/browse/"):
             rel = path[len("/browse"):] if path.startswith("/browse") else ""
             page = render_listing(rel)
@@ -271,13 +317,28 @@ class Handler(BaseHTTPRequestHandler):
             ctype = mimetypes.guess_type(target)[0] or "application/octet-stream"
             self._send_raw(200, ctype, data)
 
+    def _read_json_body(self):
+        length = int(self.headers.get("Content-Length", 0))
+        return json.loads(self.rfile.read(length).decode("utf-8"))
+
+    def _write_atomic(self, target, data_bytes):
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(target), suffix=".tmp")
+        with os.fdopen(fd, "wb") as f:
+            f.write(data_bytes)
+        os.replace(tmp, target)
+
     def do_POST(self):
-        if self.path != "/save":
+        path = self.path.split("?", 1)[0]
+        if path == "/save":
+            self.handle_save()
+        elif path == "/restore":
+            self.handle_restore()
+        else:
             self._send_json(404, {"ok": False, "error": "not found"})
-            return
+
+    def handle_save(self):
         try:
-            length = int(self.headers.get("Content-Length", 0))
-            data = json.loads(self.rfile.read(length).decode("utf-8"))
+            data = self._read_json_body()
             raw_path = data["path"]
             html = data["html"]
         except (ValueError, KeyError, json.JSONDecodeError):
@@ -295,21 +356,46 @@ class Handler(BaseHTTPRequestHandler):
         backup = target + ".bak"
         if not os.path.exists(backup):
             shutil.copy2(target, backup)
+        save_history(target)
 
-        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(target), suffix=".tmp")
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(html)
-            os.replace(tmp, target)
+            self._write_atomic(target, html.encode("utf-8"))
         except OSError as err:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
             self._send_json(500, {"ok": False, "error": str(err)})
             return
 
         self._send_json(200, {"ok": True, "path": target})
+
+    def handle_restore(self):
+        try:
+            data = self._read_json_body()
+            raw_path = data["path"]
+            version = data["version"]
+        except (ValueError, KeyError, json.JSONDecodeError):
+            self._send_json(400, {"ok": False, "error": "bad request"})
+            return
+
+        target = resolve_save_target(raw_path)
+        if target is None or not os.path.isfile(target):
+            self._send_json(404, {"ok": False, "error": "file not found"})
+            return
+        # The version must be a bare filename belonging to this file's history.
+        if version != os.path.basename(version) or not version.startswith(os.path.basename(target) + "."):
+            self._send_json(403, {"ok": False, "error": "bad version"})
+            return
+        src = os.path.join(os.path.dirname(target), HISTORY_DIR, version)
+        if not os.path.isfile(src):
+            self._send_json(404, {"ok": False, "error": "version not found"})
+            return
+
+        save_history(target)  # snapshot the current state before restoring
+        try:
+            with open(src, "rb") as f:
+                self._write_atomic(target, f.read())
+        except OSError as err:
+            self._send_json(500, {"ok": False, "error": str(err)})
+            return
+        self._send_json(200, {"ok": True, "path": target, "restored": version})
 
     def log_message(self, fmt, *args):
         print("[htmdoc] %s" % (fmt % args))
