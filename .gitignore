@@ -2,3 +2,5 @@
 *.bak
 *.zip
 .claude/
+.htmdoc-history/
+__pycache__/

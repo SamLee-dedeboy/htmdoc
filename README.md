@@ -16,13 +16,15 @@ You need [Python](https://www.python.org/downloads/) — already on most Macs;
 Windows users install it once (**tick "Add python.exe to PATH"**).
 
 1. **Download**: green **Code** button above → **Download ZIP** → unzip.
-2. **Start the helper**:
-   - **Mac**: open Terminal (⌘+Space, "Terminal"), type `python3 `, drag
-     `htmdoc.py` into the window, press Return.
-   - **Windows**: in the unzipped folder, type `cmd` in File Explorer's
-     address bar, then run `python htmdoc.py`.
+2. **Start the helper** — easiest way, just double-click:
+   - **Mac**: double-click **`htmdoc-mac.command`**.
+   - **Windows**: double-click **`htmdoc-windows.bat`**.
 
-   **Leave the window open** — the helper only works while it's running.
+   (The first time on a Mac you may need to right-click → **Open** to get past
+   Gatekeeper.) Prefer the terminal? `python3 htmdoc.py` (Mac/Linux) or
+   `python htmdoc.py` (Windows) does the same thing.
+
+   **Leave the window it opens running** — the helper only works while it's up.
 3. **Install the bookmark**: go to **http://127.0.0.1:8321/** and drag the
    blue **Make editable** button onto your bookmarks bar (⌘⇧B / Ctrl+Shift+B
    shows the bar).
@@ -45,10 +47,10 @@ case you ever want the original back.
 A small dark toolbar floats in the top-right corner:
 
 ```
-┌───────────────────────────────────────────────────────────────┐
-│ Editing: ON │ Text ▾ │ B I U S │ 🟥 🟨 │ Save │ Auto-save: on │ – │
-│ • List  1. List  ⇤ ⇥  L C R  ↺ ↻  Tx  Find  History  [table ops] │
-└───────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────┐
+│ Editing: ON │ Text ▾ │ B I U S │ 🟥 🟨 │ Save │ Auto-save: on │ –    │
+│ • 1.  ⇤ ⇥  L C R  ↺ ↻  Tx  Insert ▾  Find  History  [table ops]      │
+└────────────────────────────────────────────────────────────────────┘
 ```
 
 - **Text ▾** turns the current line into a heading, quote, code block, or
@@ -56,6 +58,12 @@ A small dark toolbar floats in the top-right corner:
   selection; the two color squares set text and highlight color.
 - **Lists, indent (⇤ ⇥), alignment (L C R), undo/redo (↺ ↻)**, and **Tx**
   (clear formatting) work on the selection.
+- **Insert ▾** drops in a new **link** (from the selected text, or fresh), a
+  **table**, an **image** from your computer, or a **divider** at the cursor.
+- **Pasting is cleaned up.** Text copied from Word, Google Docs, or a chat
+  usually carries a mess of hidden styling; the editor keeps the words and the
+  basic structure and drops the rest. Hold **Shift** while pasting for plain
+  text.
 - **Find** opens find & replace — change a word everywhere on the page at
   once.
 - **History** lists the last saved versions of the file; one click restores
@@ -99,6 +107,9 @@ elements):
   file can't end up half-written.
 - Saved files contain only your page and your edits — no leftover pieces of
   this tool.
+- Saving a page you *haven't* changed does nothing at all — the file isn't
+  rewritten and no new version is recorded, so incidental saves don't pile up
+  history or churn the file's timestamp.
 - Beyond the one-time `.bak`, the helper keeps the **last 10 saved versions**
   of each file in a hidden `.htmdoc-history` folder next to it — the
   toolbar's **History** button restores any of them (and restoring itself
@@ -204,16 +215,32 @@ use the tool.*
 |---|---|
 | `--root DIR` | Directory whose files can be edited (default: your home directory). Also the security boundary. |
 | `--port N` | Port (default 8321). Everything adapts automatically. |
+| `--token [VALUE]` | Require a secret token on every save. Bare `--token` auto-generates one; `--token VALUE` sets your own. The landing-page bookmarklet carries it automatically. Without this flag, writes are still gated by the Origin/Host checks below. |
 | `--inject` | Permanently write the editor tag into HTML files directly in root, making them self-editable without even the bookmark click. |
 
 ## Security notes
 
 The server binds `127.0.0.1` only, refuses paths outside `--root`, only
 writes to existing `.html`/`.htm` files, writes atomically, and keeps a
-one-time `.bak`. There is no auth token in this version, so any page running
-in your browser could in principle POST to it while it's running — run it
-only while editing, or narrow `--root`, or add a token if that matters in
-your environment.
+one-time `.bak`. On top of that it defends against the two web attacks a
+localhost helper is exposed to:
+
+- **DNS rebinding** — it rejects any request whose `Host` header isn't
+  `localhost`/`127.0.0.1`, so a remote site whose name resolves to your
+  loopback address can't reach it.
+- **Cross-site writes** — a save is accepted only from a page on this machine
+  (a `file://` page, or one served by the helper itself). Another website you
+  have open can't silently POST edits into your files: its request carries its
+  own `Origin`, which is refused.
+
+For a shared machine, or to close the residual case of a sandboxed
+(null-origin) frame, run with **`--token`**: the helper prints a secret and
+bakes it into the landing-page bookmarklet, and every save must present it.
+
+Reads follow the same fence: the helper only returns a usable
+`Access-Control-Allow-Origin` to local pages, so another site can't read your
+files back either. Still, treat it as a convenience tool — run it while you're
+editing, and narrow `--root` to the folder you actually work in.
 
 ## JS API
 
@@ -228,3 +255,19 @@ python3 htmdoc.py --root .     # from this repo's directory
 # open http://127.0.0.1:8321/ and click demo.html — or double-click
 # demo.html in Finder and use the bookmarklet
 ```
+
+## Developing
+
+Run the test suite (standard-library `unittest`, no dependencies):
+
+```sh
+python3 -m unittest -v test_htmdoc
+```
+
+It covers the parts that touch your disk: path-safety, the atomic
+save / one-time-backup / rolling-history round-trip, and the Origin/Host/token
+security guards. CI runs it on Linux, macOS, and Windows.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
