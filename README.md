@@ -46,12 +46,7 @@ case you ever want the original back.
 
 A small dark toolbar floats in the top-right corner:
 
-```
-┌────────────────────────────────────────────────────────────────────┐
-│ Editing: ON │ Text ▾ │ B I U S │ 🟥 🟨 │ Save │ Auto-save: on │ –    │
-│ • 1.  ⇤ ⇥  L C R  ↺ ↻  Tx  Insert ▾  Find  History  [table ops]      │
-└────────────────────────────────────────────────────────────────────┘
-```
+<img src="docs/toolbar.png" width="616" alt="The htmdoc editing toolbar. Top row: an Editing on/off toggle, a paragraph-style menu (Text), bold/italic/underline/strikethrough, text and highlight color, Save, and the auto-save status. Second row: bulleted and numbered lists, outdent/indent, left/center/right align, undo/redo, clear formatting, an Insert menu, Find, and History. A legend explains the not-editable and partly-editable outlines.">
 
 - **Text ▾** turns the current line into a heading, quote, code block, or
   back to normal text. **B/I/U/S** bold/italicize/underline/strike the
