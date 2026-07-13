@@ -26,9 +26,11 @@ Endpoints:
     GET  /health            -> 200, lets the editor detect the server
     POST /save              -> body {"path": ..., "html": ...}; writes the file
 
-Safety: binds 127.0.0.1 only; reads and writes are confined to --root;
-writes further restricted to existing .html/.htm files; atomic writes;
-one-time <file>.bak backups.
+Safety: binds 127.0.0.1 only; rejects requests whose Host isn't localhost
+(defeats DNS rebinding); writes require a same-machine Origin (or a --token),
+so another website can't POST edits to your files; reads and writes are
+confined to --root; writes further restricted to existing .html/.htm files;
+atomic writes; one-time <file>.bak backups.
 
 --inject (optional, legacy): additionally write the editor tag permanently
 into the HTML files directly in root, for pages you want self-editable when
@@ -39,6 +41,8 @@ import html as html_mod
 import json
 import mimetypes
 import os
+import re
+import secrets
 import shutil
 import tempfile
 import time
@@ -47,6 +51,10 @@ from urllib.parse import parse_qs, quote, unquote
 
 ROOT = os.getcwd()
 PORT = 8321
+# Optional shared secret. When set (via --token), /save and /restore require it
+# in the request body; the landing-page bookmarklet and injected tag carry it
+# automatically. Empty means writes are authorized by Origin/Host checks alone.
+TOKEN = ""
 HERE = os.path.dirname(os.path.abspath(__file__))
 EDITOR_JS = os.path.join(HERE, "htmdoc.js")
 
@@ -90,13 +98,22 @@ def list_history(target):
             out.append({"version": name, "mtime": int(st.st_mtime), "size": st.st_size})
     return out
 
-# Injected into served HTML only — never written to disk. data-me-injected
-# tells the editor to strip this tag when serializing for a save.
-INJECT_TAG = b'<script src="/htmdoc.js" data-htmdoc data-me-injected></script>'
+# Signatures that mean a page already carries the editor tag, so we must not
+# inject a second one. Deliberately specific — an attribute or the script's
+# filename, not the bare product name — so a document that merely *mentions*
+# htmdoc (this README rendered to HTML, say) still becomes editable.
+# ("make-editable" is the tool's former name; old tags keep working.)
+EDITOR_MARKS = (b"data-htmdoc", b"data-make-editable",
+                b"data-me-injected", b"make-editable.js")
 
-# Files carrying any of these already reference the editor ("make-editable"
-# is the tool's former name — old tags keep working).
-EDITOR_MARKS = (b"htmdoc", b"make-editable")
+
+def inject_tag_bytes():
+    """The editor <script> tag injected into served HTML — never written to
+    disk. data-me-injected tells the editor to strip it when serializing a
+    save; data-token (when a token is set) authorizes writes from the page."""
+    extra = (' data-token="%s"' % TOKEN) if TOKEN else ""
+    return ('<script src="/htmdoc.js" data-htmdoc data-me-injected%s></script>'
+            % extra).encode("ascii")
 
 
 def real_root():
@@ -120,10 +137,19 @@ def inject_editor(data):
     """Insert the editor tag into served HTML bytes (idempotent)."""
     if any(mark in data for mark in EDITOR_MARKS):
         return data
+    tag = inject_tag_bytes()
     idx = data.lower().rfind(b"</body>")
     if idx == -1:
-        return data + b"\n" + INJECT_TAG + b"\n"
-    return data[:idx] + INJECT_TAG + b"\n" + data[idx:]
+        return data + b"\n" + tag + b"\n"
+    return data[:idx] + tag + b"\n" + data[idx:]
+
+
+def normalize_client_path(raw):
+    """A file:// pathname on Windows arrives as "/C:/Users/...". Drop the
+    leading slash so it resolves to a real drive path; leave POSIX paths alone."""
+    if re.match(r"^/[A-Za-z]:[\\/]", raw or ""):
+        return raw[1:]
+    return raw
 
 
 def resolve_save_target(raw_path):
@@ -139,8 +165,9 @@ def resolve_save_target(raw_path):
     candidates = []
     if raw_path.startswith("/files/"):
         candidates.append(os.path.realpath(os.path.join(root, raw_path[len("/files/"):])))
-    if os.path.isabs(raw_path):
-        candidates.append(os.path.realpath(raw_path))
+    abs_candidate = normalize_client_path(raw_path)
+    if os.path.isabs(abs_candidate):
+        candidates.append(os.path.realpath(abs_candidate))
     candidates.append(os.path.realpath(os.path.join(root, raw_path.lstrip("/"))))
     candidates.append(os.path.realpath(os.path.join(root, os.path.basename(raw_path))))
     allowed = [t for t in candidates
@@ -152,12 +179,15 @@ def resolve_save_target(raw_path):
 
 
 def bookmarklet(port):
-    # data-me-injected keeps the appended tag out of saved files.
+    # data-me-injected keeps the appended tag out of saved files. When a token
+    # is set it's baked in here so pages installed from this page can save.
+    tok = ("s.setAttribute('data-token','%s');" % TOKEN) if TOKEN else ""
     return ("javascript:(function()%7Bvar s=document.createElement('script');"
             "s.src='http://127.0.0.1:{p}/htmdoc.js';"
             "s.setAttribute('data-htmdoc','');"
             "s.setAttribute('data-me-injected','');"
-            "document.body.appendChild(s);%7D)();").format(p=port)
+            "{tok}"
+            "document.body.appendChild(s);%7D)();").format(p=port, tok=tok)
 
 
 def render_listing(rel_dir):
@@ -237,6 +267,48 @@ the page editable, and every edit saves itself back to the file.</p>
 
 
 class Handler(BaseHTTPRequestHandler):
+    # ---- Origin / Host guards (defense in depth) ----------------------------
+    # The server binds 127.0.0.1, but a browser reaching it is still exposed to
+    # two web attacks: DNS rebinding (a remote site whose name resolves to
+    # 127.0.0.1) and cross-site writes (any open page POSTing to /save). The
+    # Host check defeats the first; the Origin allowlist / token defeats the
+    # second. Reads are additionally protected by only echoing an
+    # Access-Control-Allow-Origin the browser will accept — a disallowed origin
+    # simply can't read our responses.
+
+    def _host_ok(self):
+        host = self.headers.get("Host", "")
+        if host == "":
+            return True  # HTTP/1.0 clients may omit it; rebinding never does
+        if host.startswith("["):            # IPv6 literal, e.g. [::1]:8321
+            name = host[1:].split("]", 1)[0]
+        else:
+            name = host.rsplit(":", 1)[0] if ":" in host else host
+        return name in ("127.0.0.1", "localhost", "::1")
+
+    def _allowed_origins(self):
+        return ("http://127.0.0.1:%d" % PORT, "http://localhost:%d" % PORT)
+
+    def _cors_origin(self):
+        """The value to echo in Access-Control-Allow-Origin, or None to omit it
+        (which makes the browser refuse to expose the response cross-origin)."""
+        origin = self.headers.get("Origin")
+        if origin is None:
+            return None
+        if origin == "null" or origin in self._allowed_origins():
+            return origin
+        return None
+
+    def _write_authorized(self, body):
+        """Whether this POST may modify a file. With a token, the body must
+        carry it. Without one, the request must come from a local page
+        (file:// -> Origin null/absent, or the server's own origin) — a plain
+        cross-site POST from another website is refused."""
+        if TOKEN:
+            return isinstance(body, dict) and body.get("token") == TOKEN
+        origin = self.headers.get("Origin")
+        return origin is None or origin == "null" or origin in self._allowed_origins()
+
     def _send_json(self, code, payload):
         body = json.dumps(payload).encode("utf-8")
         self._send_raw(code, "application/json", body)
@@ -245,7 +317,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
+        aco = self._cors_origin()
+        if aco is not None:
+            self.send_header("Access-Control-Allow-Origin", aco)
+            self.send_header("Vary", "Origin")
         self.send_header("Cache-Control", "no-cache")
         for k, v in (extra or {}).items():
             self.send_header(k, v)
@@ -253,13 +328,23 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_OPTIONS(self):
+        if not self._host_ok():
+            self.send_response(403)
+            self.end_headers()
+            return
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
+        aco = self._cors_origin()
+        if aco is not None:
+            self.send_header("Access-Control-Allow-Origin", aco)
+            self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
     def do_GET(self):
+        if not self._host_ok():
+            self._send_json(403, {"ok": False, "error": "bad host"})
+            return
         parts = self.path.split("?", 1)
         path = unquote(parts[0])
         raw = len(parts) > 1 and "raw=1" in parts[1]
@@ -328,6 +413,9 @@ class Handler(BaseHTTPRequestHandler):
         os.replace(tmp, target)
 
     def do_POST(self):
+        if not self._host_ok():
+            self._send_json(403, {"ok": False, "error": "bad host"})
+            return
         path = self.path.split("?", 1)[0]
         if path == "/save":
             self.handle_save()
@@ -345,6 +433,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"ok": False, "error": "bad request"})
             return
 
+        if not self._write_authorized(data):
+            self._send_json(403, {"ok": False, "error": "not authorized"})
+            return
+
         target = resolve_save_target(raw_path)
         if target is None:
             self._send_json(403, {"ok": False, "error": "path not allowed"})
@@ -353,13 +445,25 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(404, {"ok": False, "error": "file does not exist"})
             return
 
+        new_bytes = html.encode("utf-8")
+        # No-op save: if the content is byte-identical to what's on disk, skip
+        # the write entirely — no touched mtime, no .bak, no history churn. Keeps
+        # saves idempotent so incidental re-saves don't pile up versions.
+        try:
+            with open(target, "rb") as f:
+                if f.read() == new_bytes:
+                    self._send_json(200, {"ok": True, "path": target, "unchanged": True})
+                    return
+        except OSError:
+            pass
+
         backup = target + ".bak"
         if not os.path.exists(backup):
             shutil.copy2(target, backup)
         save_history(target)
 
         try:
-            self._write_atomic(target, html.encode("utf-8"))
+            self._write_atomic(target, new_bytes)
         except OSError as err:
             self._send_json(500, {"ok": False, "error": str(err)})
             return
@@ -373,6 +477,10 @@ class Handler(BaseHTTPRequestHandler):
             version = data["version"]
         except (ValueError, KeyError, json.JSONDecodeError):
             self._send_json(400, {"ok": False, "error": "bad request"})
+            return
+
+        if not self._write_authorized(data):
+            self._send_json(403, {"ok": False, "error": "not authorized"})
             return
 
         target = resolve_save_target(raw_path)
@@ -405,8 +513,9 @@ def inject_script_tags(port):
     """Legacy --inject mode: permanently add the editor tag to every
     .html/.htm directly in ROOT (skipping files that already have it), for
     pages that should be self-editable when opened via file://."""
-    tag = ('<script src="http://127.0.0.1:%d/htmdoc.js" data-htmdoc></script>'
-           % port).encode("ascii")
+    extra = (' data-token="%s"' % TOKEN) if TOKEN else ''
+    tag = ('<script src="http://127.0.0.1:%d/htmdoc.js" data-htmdoc%s></script>'
+           % (port, extra)).encode("ascii")
     injected = 0
     for name in sorted(os.listdir(ROOT)):
         if not is_html(name):
@@ -444,20 +553,33 @@ def inject_script_tags(port):
 
 
 def main():
-    global ROOT, PORT
+    global ROOT, PORT, TOKEN
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--port", type=int, default=8321)
     ap.add_argument("--root", default=os.path.expanduser("~"),
                     help="directory whose HTML files may be edited and saved (default: your home directory)")
     ap.add_argument("--inject", action="store_true",
                     help="also write the editor tag permanently into HTML files directly in root")
+    ap.add_argument("--token", nargs="?", const="__generate__", default=None,
+                    help="require a secret token on save/restore. Bare --token "
+                         "auto-generates one; --token VALUE sets it. Without "
+                         "this flag, writes are authorized by Origin/Host checks.")
     args = ap.parse_args()
     ROOT = os.path.abspath(args.root)
     PORT = args.port
+    if args.token is not None:
+        TOKEN = secrets.token_urlsafe(16) if args.token == "__generate__" else args.token
     if args.inject:
         inject_script_tags(args.port)
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     print("[htmdoc] editable files under: %s" % ROOT)
+    print("[htmdoc] every HTML file in that tree can be overwritten while this")
+    print("[htmdoc]   runs — narrow it with --root DIR if that's broader than you want.")
+    if TOKEN:
+        print("[htmdoc] save token required: %s" % TOKEN)
+        print("[htmdoc]   (the bookmarklet on the landing page carries it automatically)")
+    else:
+        print("[htmdoc] writes are authorized by Origin/Host checks; add --token to require a secret.")
     print("[htmdoc] open http://127.0.0.1:%d/ to install the bookmarklet (once)," % args.port)
     print("[htmdoc] then double-click any HTML file and click it to edit.")
     server.serve_forever()
