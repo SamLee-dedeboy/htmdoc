@@ -63,6 +63,12 @@
   })();
   api.server = SERVER;
 
+  // Optional shared secret. When the server runs with --token, it bakes the
+  // value into the bookmarklet / injected tag as data-token; we echo it back in
+  // save/restore bodies so the write is authorized.
+  var TOKEN = (ownScript && ownScript.getAttribute('data-token')) || '';
+  api.hasToken = !!TOKEN;
+
   function onReady(fn) {
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', fn);
@@ -113,6 +119,10 @@
       '#' + TOOLBAR_ID + ' button{all:unset;cursor:pointer;padding:4px 9px;border-radius:6px;',
       'background:rgba(255,255,255,.12);color:#fff;font:inherit;}',
       '#' + TOOLBAR_ID + ' button:hover{background:rgba(255,255,255,.24);}',
+      // Restore a visible keyboard-focus ring (the all:unset above removes it).
+      '#' + TOOLBAR_ID + ' button:focus-visible,#' + TOOLBAR_ID + ' select:focus-visible,',
+      '#' + TOOLBAR_ID + ' .me-color:focus-within,#' + PANEL_ID + ' button:focus-visible,',
+      '#' + PANEL_ID + ' input:focus-visible{outline:2px solid #4da3ff;outline-offset:1px;}',
       '#' + TOOLBAR_ID + ' button.me-on{background:#34c759;color:#0a2a12;font-weight:600;}',
       '#' + TOOLBAR_ID + ' .me-fmt{font-weight:700;min-width:14px;text-align:center;}',
       '#' + TOOLBAR_ID + ' .me-status{color:rgba(255,255,255,.75);padding:0 4px;min-width:52px;text-align:center;}',
@@ -197,25 +207,30 @@
   var saveTimer = null;
   var pendingSave = false;
 
-  function savePayload() {
-    return JSON.stringify({ path: filePath(), html: serializePage() });
+  function savePayload(html) {
+    return JSON.stringify({ path: filePath(), html: html, token: TOKEN });
   }
 
   function saveNow() {
     if (!api.serverOk) return Promise.resolve(false);
     pendingSave = false;
     clearTimeout(saveTimer);
+    var html = serializePage();
+    // No-op guard: if nothing changed since the last successful save, don't
+    // POST at all — keeps saves idempotent and avoids churning file mtime and
+    // version history on incidental re-saves (the server enforces this too).
+    if (html === api._lastSaved) { setStatus('Saved ✓'); return Promise.resolve(true); }
     setStatus('Saving…');
     // text/plain keeps this a "simple" CORS request (no preflight), matching
     // what sendBeacon sends on unload.
     return fetch(SERVER + '/save', {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
-      body: savePayload()
+      body: savePayload(html)
     })
       .then(function (res) { return res.json(); })
       .then(function (out) {
-        if (out && out.ok) { setStatus('Saved ✓'); return true; }
+        if (out && out.ok) { api._lastSaved = html; setStatus('Saved ✓'); return true; }
         setStatus('Save failed');
         return false;
       })
@@ -239,7 +254,9 @@
     if (!pendingSave || !api.serverOk || !navigator.sendBeacon) return;
     pendingSave = false;
     clearTimeout(saveTimer);
-    navigator.sendBeacon(SERVER + '/save', new Blob([savePayload()], { type: 'text/plain' }));
+    var html = serializePage();
+    if (html === api._lastSaved) return;
+    navigator.sendBeacon(SERVER + '/save', new Blob([savePayload(html)], { type: 'text/plain' }));
   }
 
   function detectServer() {
@@ -482,6 +499,33 @@
     api._bar.classList.toggle('me-haslegend', !!any);
   }
 
+  // Re-run the scope indicators after the DOM changes (insert, paste, table
+  // ops), so newly added images/tables/etc. get their outlines and the legend
+  // stays accurate without a reload.
+  function refreshScopeMarks() {
+    markUneditables();
+    updateLegend();
+  }
+
+  // ---- Small HTML/URL escaping (for inserted content) ----
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c];
+    });
+  }
+  function escapeAttr(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+  // Reject dangerous URL schemes (javascript:, vbscript:, …) while allowing
+  // http(s), mailto, tel, fragments, relative paths, and inline images.
+  function safeUrl(u) {
+    u = String(u).trim();
+    if (/^(https?:|mailto:|tel:|#|\/|\.|data:image\/)/i.test(u)) return true;
+    return !/^[a-z0-9.+-]*:/i.test(u); // no scheme (relative) is fine; any other scheme is not
+  }
+
   // Script-generated content: when the page is served from the save server
   // (/files/), fetch the raw source and mark every element that exists in
   // the rendered DOM but not in the file — that content will be re-created
@@ -554,6 +598,9 @@
       if (/[\n\r\t]/.test(n.nodeValue)) n.nodeValue = n.nodeValue.replace(/\s+/g, ' ');
     }
   }
+
+  // Tracks whether Shift is held, so a Shift+paste pastes plain text.
+  var shiftDown = false;
 
   // Toolbar widgets like <select> and color inputs steal the text selection;
   // remember it on mousedown and restore it before running the command.
@@ -708,7 +755,162 @@
     find.focus();
   }
 
+  // ---- Insert (link / table / image / divider) ----
+  // The toolbar's paragraph-style select and this menu both steal the caret, so
+  // the selection is remembered on mousedown (rememberSelection) and restored
+  // before the command runs.
+
+  var TABLE_HTML =
+    '<table><thead><tr><th>Header</th><th>Header</th></tr></thead>' +
+    '<tbody><tr><td>Cell</td><td>Cell</td></tr>' +
+    '<tr><td>Cell</td><td>Cell</td></tr></tbody></table><p><br></p>';
+
+  function insertHTMLAtCaret(html) {
+    restoreSelection();
+    var s = window.getSelection();
+    // If the caret isn't in the document (e.g. nothing was focused), drop the
+    // new content at the end of the body rather than losing it.
+    var anchor = s && s.anchorNode;
+    var inDoc = anchor && !insideEditorUi(anchor.nodeType === 1 ? anchor : anchor.parentElement || document.body);
+    if (!s.rangeCount || !inDoc) {
+      var r = document.createRange();
+      r.selectNodeContents(document.body);
+      r.collapse(false);
+      s.removeAllRanges();
+      s.addRange(r);
+    }
+    document.execCommand('insertHTML', false, html);
+    scheduleSave();
+    refreshScopeMarks();
+  }
+
+  function insertLink() {
+    restoreSelection();
+    var s = window.getSelection();
+    var hasText = !!(s && s.rangeCount && !s.getRangeAt(0).collapsed);
+    var rect = api._bar ? api._bar.getBoundingClientRect() : { left: 40, bottom: 40 };
+    var panel = openPanel(rect.left, rect.bottom + 8);
+    var textInput = hasText ? null : panelField(panel, 'Text', '');
+    var urlInput = panelField(panel, 'URL', 'https://');
+    panelActions(panel, 'Insert link', function () {
+      var url = urlInput.value.trim();
+      if (!safeUrl(url)) { urlInput.value = ''; urlInput.focus(); return; }
+      if (hasText) {
+        restoreSelection();
+        document.execCommand('createLink', false, url);
+        scheduleSave();
+      } else {
+        var text = textInput.value || url;
+        insertHTMLAtCaret('<a href="' + escapeAttr(url) + '">' + escapeHtml(text) + '</a>');
+      }
+      closePanel();
+    });
+    (textInput || urlInput).focus();
+  }
+
+  function insertImage() {
+    var input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.addEventListener('change', function () {
+      var f = input.files && input.files[0];
+      if (!f) return;
+      var reader = new FileReader();
+      reader.onload = function () {
+        insertHTMLAtCaret('<img src="' + escapeAttr(reader.result) + '" alt="">');
+      };
+      reader.readAsDataURL(f);
+    });
+    input.click();
+  }
+
+  function doInsert(kind) {
+    if (kind === 'link') insertLink();
+    else if (kind === 'table') insertHTMLAtCaret(TABLE_HTML);
+    else if (kind === 'image') insertImage();
+    else if (kind === 'hr') insertHTMLAtCaret('<hr>');
+  }
+
+  // ---- Paste sanitization ----
+  // Pasting from Word / Google Docs / AI chats dumps huge inline-styled span
+  // soup into contentEditable, which would then serialize straight into the
+  // file. Intercept paste, keep a safe tag/attribute subset, and drop style,
+  // class, ids, scripts, and event handlers. Hold Shift while pasting (or when
+  // there's no HTML flavor) to paste plain text instead.
+
+  var PASTE_ALLOWED = {
+    A: 1, B: 1, STRONG: 1, I: 1, EM: 1, U: 1, S: 1, STRIKE: 1, DEL: 1, INS: 1,
+    MARK: 1, SUB: 1, SUP: 1, CODE: 1, PRE: 1, KBD: 1, SAMP: 1, VAR: 1, BR: 1,
+    SPAN: 1, P: 1, DIV: 1, H1: 1, H2: 1, H3: 1, H4: 1, H5: 1, H6: 1,
+    BLOCKQUOTE: 1, UL: 1, OL: 1, LI: 1, DL: 1, DT: 1, DD: 1, TABLE: 1,
+    THEAD: 1, TBODY: 1, TFOOT: 1, TR: 1, TD: 1, TH: 1, CAPTION: 1, COLGROUP: 1,
+    COL: 1, IMG: 1, FIGURE: 1, FIGCAPTION: 1, HR: 1, ABBR: 1, CITE: 1, Q: 1,
+    SMALL: 1, TIME: 1
+  };
+  var PASTE_ATTRS = {
+    A: ['href'], IMG: ['src', 'alt', 'width', 'height'],
+    TD: ['colspan', 'rowspan'], TH: ['colspan', 'rowspan'],
+    ABBR: ['title'], TIME: ['datetime'], COL: ['span'], COLGROUP: ['span']
+  };
+  var PASTE_DROP = { SCRIPT: 1, STYLE: 1, HEAD: 1, TITLE: 1, META: 1, LINK: 1, BASE: 1, NOSCRIPT: 1 };
+
+  function sanitizePastedHtml(html) {
+    var doc = new DOMParser().parseFromString(html, 'text/html');
+    var out = document.createElement('div');
+    (function walk(src, dest) {
+      for (var n = src.firstChild; n; n = n.nextSibling) {
+        if (n.nodeType === 3) { dest.appendChild(document.createTextNode(n.nodeValue)); continue; }
+        if (n.nodeType !== 1) continue;
+        var tag = n.tagName;
+        if (PASTE_DROP[tag]) continue;                 // drop element and contents
+        if (!PASTE_ALLOWED[tag]) { walk(n, dest); continue; } // unwrap, keep children
+        var el = document.createElement(tag.toLowerCase());
+        var keep = PASTE_ATTRS[tag] || [];
+        for (var a = 0; a < keep.length; a++) {
+          var val = n.getAttribute(keep[a]);
+          if (val == null) continue;
+          if ((tag === 'A' && keep[a] === 'href') || (tag === 'IMG' && keep[a] === 'src')) {
+            if (!safeUrl(val)) continue;
+          }
+          el.setAttribute(keep[a], val);
+        }
+        walk(n, el);
+        dest.appendChild(el);
+      }
+    })(doc.body, out);
+    return out.innerHTML;
+  }
+
+  function handlePaste(e) {
+    if (!api.enabled) return;
+    if (!e.target || insideEditorUi(e.target)) return; // toolbar/panels: native paste
+    var cd = e.clipboardData;
+    if (!cd) return;
+    var html = cd.getData('text/html');
+    var text = cd.getData('text/plain');
+    e.preventDefault();
+    if (shiftDown || !html) {
+      document.execCommand('insertText', false, text);
+    } else {
+      document.execCommand('insertHTML', false, sanitizePastedHtml(html));
+    }
+    scheduleSave();
+    refreshScopeMarks();
+  }
+
   // ---- Version history (server keeps the last saves) ----
+
+  function afterRestore() {
+    // A served (/files/) page gets the editor re-injected on reload, so the
+    // toolbar returns seamlessly. A file:// page opened via the bookmarklet
+    // does not — warn before reloading so the vanished toolbar isn't a mystery.
+    api._lastSaved = null; // the file changed under us; force the next save
+    if (location.pathname.indexOf('/files/') === 0) { location.reload(); return; }
+    alert('Restored ✓\n\nThe page will now reload to show the restored file. ' +
+      'Because it was opened directly (file://), the editor toolbar won’t ' +
+      'come back on its own — click your “Make editable” bookmark again to keep editing.');
+    location.reload();
+  }
 
   function openHistoryPanel() {
     if (!api.serverOk) { setStatus('No save server'); return; }
@@ -747,11 +949,11 @@
             fetch(SERVER + '/restore', {
               method: 'POST',
               headers: { 'Content-Type': 'text/plain' },
-              body: JSON.stringify({ path: filePath(), version: v.version })
+              body: JSON.stringify({ path: filePath(), version: v.version, token: TOKEN })
             })
               .then(function (r2) { return r2.json(); })
               .then(function (res) {
-                if (res && res.ok) location.reload();
+                if (res && res.ok) afterRestore();
                 else setStatus('Restore failed');
               })
               .catch(function () { setStatus('Restore failed'); });
@@ -817,17 +1019,26 @@
     var bar = document.createElement('div');
     bar.id = TOOLBAR_ID;
     bar.setAttribute('contenteditable', 'false');
+    bar.setAttribute('role', 'toolbar');
+    bar.setAttribute('aria-label', 'htmdoc editing toolbar');
 
     var toggle = document.createElement('button');
     toggle.textContent = 'Editing: OFF';
     toggle.title = 'Toggle page editing';
+    toggle.setAttribute('aria-label', 'Toggle page editing');
+    toggle.setAttribute('aria-pressed', 'false');
     toggle.addEventListener('click', function () { api.toggle(); });
 
+    // NOTE: formatting rides on document.execCommand, which is deprecated but
+    // still broadly supported and remains the only one-call way to apply rich
+    // formatting to a Selection across browsers. A replacement would be a
+    // Selection/Range-based command layer — a large effort tracked, not chased.
     function fmtButton(label, command, titleText) {
       var b = document.createElement('button');
       b.className = 'me-fmt';
       b.textContent = label;
       b.title = titleText;
+      b.setAttribute('aria-label', titleText);
       // mousedown + preventDefault so the text selection is not lost
       b.addEventListener('mousedown', function (e) {
         e.preventDefault();
@@ -839,6 +1050,7 @@
     var save = document.createElement('button');
     save.textContent = 'Save';
     save.title = 'Save now (Cmd/Ctrl+S). Auto-save is on when the save server is running; without it this opens a file picker or downloads a copy.';
+    save.setAttribute('aria-label', 'Save now');
     save.addEventListener('click', manualSave);
 
     var status = document.createElement('span');
@@ -851,6 +1063,7 @@
 
     var block = document.createElement('select');
     block.title = 'Paragraph style';
+    block.setAttribute('aria-label', 'Paragraph style');
     [['P', 'Text'], ['H1', 'Heading 1'], ['H2', 'Heading 2'], ['H3', 'Heading 3'],
      ['BLOCKQUOTE', 'Quote'], ['PRE', 'Code']].forEach(function (opt) {
       var o = document.createElement('option');
@@ -900,6 +1113,7 @@
       var input = document.createElement('input');
       input.type = 'color';
       input.value = initial;
+      input.setAttribute('aria-label', titleText);
       wrap.appendChild(input);
       wrap.addEventListener('mousedown', rememberSelection);
       input.addEventListener('change', function () {
@@ -921,6 +1135,7 @@
     minBtn.className = 'me-min';
     minBtn.textContent = '–';
     minBtn.title = 'Minimize the toolbar (editing and auto-save keep working)';
+    minBtn.setAttribute('aria-label', 'Minimize the toolbar');
     minBtn.addEventListener('click', function () { api.minimize(); });
     row.appendChild(minBtn);
     bar.appendChild(row);
@@ -938,15 +1153,36 @@
     row2.appendChild(fmtButton('↻', 'redo', 'Redo'));
     row2.appendChild(fmtButton('Tx', 'removeFormat', 'Clear formatting from the selection'));
 
+    var insert = document.createElement('select');
+    insert.title = 'Insert an element at the cursor';
+    insert.setAttribute('aria-label', 'Insert an element at the cursor');
+    [['', 'Insert ▾'], ['link', 'Link'], ['table', 'Table'], ['image', 'Image'],
+     ['hr', 'Divider']].forEach(function (opt) {
+      var o = document.createElement('option');
+      o.value = opt[0];
+      o.textContent = opt[1];
+      insert.appendChild(o);
+    });
+    insert.value = '';
+    insert.addEventListener('mousedown', rememberSelection);
+    insert.addEventListener('change', function () {
+      var v = insert.value;
+      insert.value = '';
+      if (api.enabled && v) doInsert(v);
+    });
+    row2.appendChild(insert);
+
     var findBtn = document.createElement('button');
     findBtn.textContent = 'Find';
     findBtn.title = 'Find & replace text across the whole page';
+    findBtn.setAttribute('aria-label', 'Find and replace');
     findBtn.addEventListener('click', openFindPanel);
     row2.appendChild(findBtn);
 
     var histBtn = document.createElement('button');
     histBtn.textContent = 'History';
     histBtn.title = 'Restore an earlier saved version of this file';
+    histBtn.setAttribute('aria-label', 'Version history');
     histBtn.addEventListener('click', openHistoryPanel);
     row2.appendChild(histBtn);
 
@@ -958,6 +1194,7 @@
         var b = document.createElement('button');
         b.textContent = op[0];
         b.title = op[2];
+        b.setAttribute('aria-label', op[2]);
         b.addEventListener('mousedown', function (e) { e.preventDefault(); tableOp(op[1]); });
         tgrp.appendChild(b);
       });
@@ -987,6 +1224,9 @@
     chip.setAttribute('contenteditable', 'false');
     chip.textContent = '✎';
     chip.title = 'htmdoc — click to show the toolbar';
+    chip.setAttribute('role', 'button');
+    chip.setAttribute('aria-label', 'Show the htmdoc toolbar');
+    chip.setAttribute('tabindex', '0');
     chip.addEventListener('click', function () { api.expand(); });
 
     document.body.appendChild(bar);
@@ -1013,9 +1253,13 @@
     document.body.setAttribute('contenteditable', 'true');
     document.body.classList.add('me-editing');
     api.enabled = true;
+    // Emit <span style="…"> instead of the deprecated <font> tag, and make
+    // hiliteColor work in Chromium (it's a no-op where already default).
+    try { document.execCommand('styleWithCSS', false, true); } catch (e) {}
     if (api._toggleBtn) {
       api._toggleBtn.textContent = 'Editing: ON';
       api._toggleBtn.classList.add('me-on');
+      api._toggleBtn.setAttribute('aria-pressed', 'true');
     }
   };
 
@@ -1029,6 +1273,7 @@
     if (api._toggleBtn) {
       api._toggleBtn.textContent = 'Editing: OFF';
       api._toggleBtn.classList.remove('me-on');
+      api._toggleBtn.setAttribute('aria-pressed', 'false');
     }
     if (pendingSave) saveNow();
   };
@@ -1061,12 +1306,30 @@
       }
     });
     document.addEventListener('keydown', function (e) {
+      if (e.key === 'Shift') shiftDown = true;
       if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 's') {
         e.preventDefault();
         manualSave();
       }
     });
+    document.addEventListener('keyup', function (e) { if (e.key === 'Shift') shiftDown = false; });
+    window.addEventListener('blur', function () { shiftDown = false; });
+    document.addEventListener('paste', handlePaste, true);
     window.addEventListener('pagehide', flushOnUnload);
+    // Keep the scope outlines / legend current as the DOM changes (insert,
+    // paste, table edits). childList only, debounced — markUneditables mutates
+    // attributes (titles), so observing attributes would loop.
+    if (typeof MutationObserver !== 'undefined') {
+      var scopeTimer = null;
+      new MutationObserver(function () {
+        if (!api.enabled) return;
+        clearTimeout(scopeTimer);
+        scopeTimer = setTimeout(refreshScopeMarks, 400);
+      }).observe(document.body, { childList: true, subtree: true });
+    }
+    // Snapshot the initial serialization so an unedited page never triggers a
+    // (no-op) save that would churn history.
+    api._lastSaved = serializePage();
     detectServer();
     markUneditables();
     updateLegend();
