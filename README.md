@@ -160,45 +160,6 @@ way to know which DOM a script owns, so such pages are out of scope. Plain
 lives in JS properties, not attributes, so it doesn't serialize.
 </details>
 
-## How this compares to existing tools
-
-Plenty of tools touch this space; none combine all of the properties this
-one is built around (✅ yes · ◐ partial · ❌ no):
-
-| | Edit visually in the browser | Your files, edited in place | Auto-saves to disk | Any local HTML file | No extension or app to install | No packages — runtime + stdlib only | Maintained |
-|---|---|---|---|---|---|---|---|
-| **htmdoc (this)** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ ¹ | ✅ |
-| `designMode` bookmarklets ([example](https://github.com/msankhala/editable-bookmarklet)) | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ |
-| [Chrome DevTools Workspaces](https://developer.chrome.com/docs/devtools/workspaces) | ◐ ² | ◐ ² | ◐ ² | ❌ | ✅ | ✅ | ✅ |
-| [SingleFile](https://github.com/gildas-lormeau/SingleFile) | ❌ | ❌ | ❌ | ✅ | ❌ ³ | ✅ | ✅ |
-| [TiddlyWiki](https://tiddlywiki.com/static/Saving.html) + [Timimi](https://github.com/ibnishak/Timimi) | ✅ | ✅ | ✅ | ❌ ⁴ | ❌ ³ | ◐ | ✅ |
-| [MikaelMayer/Editor](https://github.com/MikaelMayer/Editor) | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ ⁵ | ❌ ⁵ |
-| [GrapesJS](https://github.com/GrapesJS/grapesjs), [VvvebJs](https://github.com/givanz/Vvvebjs) | ✅ | ❌ ⁶ | ◐ ⁶ | ❌ | ✅ | ❌ | ✅ |
-| Pinegrow, Dreamweaver, Bootstrap Studio | ✅ | ✅ | ✅ | ✅ | ❌ ⁷ | ❌ | ✅ |
-
-¹ To be fair: a Python 3 runtime is required — preinstalled on macOS/Linux,
-a one-time install on Windows. "No packages" means nothing beyond that:
-stdlib only, no `pip`/`npm`, copy two files and run.
-² CSS edits only — Chrome [deliberately refuses](https://developer.chrome.com/docs/devtools/workspaces)
-to save DOM/HTML edits back to source ("the DOM ≠ the HTML"), and each
-folder needs workspace setup.
-³ Requires a browser extension (Timimi also needs a native host install).
-⁴ TiddlyWiki files only.
-⁵ Needs the Node runtime *plus* an npm package and its dependency tree; the
-closest relative to this tool, but it attempted the ambiguous DOM→source
-mapping problem and has been unmaintained since 2019.
-⁶ Page *builders*: you construct pages inside their canvas and export —
-they don't open an existing file in place, and saving needs a backend you write.
-⁷ Full (mostly commercial) desktop applications.
-
-**In short:** the runtime requirement is comparable to Editor's (Python vs.
-Node — both an install on Windows); what separates this tool is everything
-after the runtime: no package manager step, two readable files, an actively
-maintained codebase, your existing double-click workflow, saved files with
-no tooling traces — and an honestly-stated static-pages scope, deliberately
-avoiding the DOM-vs-source wall that stalled the more ambitious projects
-above.
-
 ---
 
 *Everything below is for technical readers — you don't need any of it to
