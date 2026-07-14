@@ -26,9 +26,15 @@
 (function () {
   'use strict';
 
-  if (window.__htmdoc || window.__makeEditable) return; // idempotent: safe to include twice
+  if (window.__htmdoc || window.__makeEditable) {
+    // Already loaded — clicking the bookmark again toggles the whole tool
+    // off/on. "Off" fully removes htmdoc and restores the page as it was.
+    var loaded = window.__htmdoc || window.__makeEditable;
+    if (loaded.toggleHtmdoc) loaded.toggleHtmdoc();
+    return;
+  }
   // __makeEditable kept as an alias of the former name.
-  var api = (window.__htmdoc = window.__makeEditable = { enabled: false, serverOk: false });
+  var api = (window.__htmdoc = window.__makeEditable = { enabled: false, serverOk: false, active: false });
 
   var TOOLBAR_ID = 'me-toolbar';
   var STYLE_ID = 'me-style';
@@ -541,6 +547,7 @@
     fetch(location.pathname + '?raw=1', { cache: 'no-store' })
       .then(function (r) { return r.text(); })
       .then(function (srcText) {
+        if (!api.active) return; // htmdoc was turned off while this was in flight
         var srcDoc = new DOMParser().parseFromString(srcText, 'text/html');
         var srcCounts = {};
         var srcEls = srcDoc.getElementsByTagName('*');
@@ -1025,11 +1032,11 @@
     bar.setAttribute('aria-label', 'htmdoc editing toolbar');
 
     var toggle = document.createElement('button');
-    toggle.textContent = 'Editing: OFF';
-    toggle.title = 'Toggle page editing';
-    toggle.setAttribute('aria-label', 'Toggle page editing');
-    toggle.setAttribute('aria-pressed', 'false');
-    toggle.addEventListener('click', function () { api.toggle(); });
+    toggle.className = 'me-on';
+    toggle.textContent = 'Turn off htmdoc';
+    toggle.title = 'Turn htmdoc off — removes this toolbar and restores the page exactly as it was (handy on pages whose own scripts draw the content). Click the Make editable bookmark to turn it back on.';
+    toggle.setAttribute('aria-label', 'Turn htmdoc off');
+    toggle.addEventListener('click', function () { api.toggleHtmdoc(); });
 
     // Buttons whose "on" state we mirror from the current selection (updated in
     // the selectionchange handler). Showing this is what lets you add italic to
@@ -1289,11 +1296,6 @@
     // Emit <span style="…"> instead of the deprecated <font> tag, and make
     // hiliteColor work in Chromium (it's a no-op where already default).
     try { document.execCommand('styleWithCSS', false, true); } catch (e) {}
-    if (api._toggleBtn) {
-      api._toggleBtn.textContent = 'Editing: ON';
-      api._toggleBtn.classList.add('me-on');
-      api._toggleBtn.setAttribute('aria-pressed', 'true');
-    }
   };
 
   api.disable = function () {
@@ -1303,11 +1305,6 @@
     document.body.removeAttribute('contenteditable');
     document.body.classList.remove('me-editing');
     api.enabled = false;
-    if (api._toggleBtn) {
-      api._toggleBtn.textContent = 'Editing: OFF';
-      api._toggleBtn.classList.remove('me-on');
-      api._toggleBtn.setAttribute('aria-pressed', 'false');
-    }
     if (pendingSave) saveNow();
   };
 
@@ -1315,61 +1312,87 @@
     api.enabled ? api.disable() : api.enable();
   };
 
-  onReady(function () {
+  // ---- Event wiring, registered so deactivate() can remove every listener ----
+
+  var LISTENERS = [];
+  function on(target, type, fn, opts) {
+    target.addEventListener(type, fn, opts);
+    LISTENERS.push([target, type, fn, opts]);
+  }
+  function offAll() {
+    while (LISTENERS.length) {
+      var L = LISTENERS.pop();
+      L[0].removeEventListener(L[1], L[2], L[3]);
+    }
+  }
+
+  // Show the table buttons when the caret is in a table, and mirror B/I/U/S
+  // "on" state + the paragraph-style dropdown from the current selection.
+  function onSelectionChange() {
+    var cell = currentCell();
+    api._cell = cell;
+    if (api._tableGrp) api._tableGrp.classList.toggle('me-on', !!cell && api.enabled);
+    if (api._fmtButtons) {
+      for (var fi = 0; fi < api._fmtButtons.length; fi++) {
+        var fb = api._fmtButtons[fi];
+        var onNow = false;
+        try { onNow = api.enabled && document.queryCommandState(fb.cmd); } catch (e) {}
+        fb.b.classList.toggle('me-active', onNow);
+        fb.b.setAttribute('aria-pressed', onNow ? 'true' : 'false');
+      }
+    }
+    if (api._blockSelect) {
+      var s = window.getSelection();
+      var anchor = s && s.anchorNode;
+      var el = anchor && (anchor.nodeType === 1 ? anchor : anchor.parentElement);
+      if (el && !insideEditorUi(el)) {
+        var blk = blockOf(el);
+        var tag = blk ? blk.tagName : '';
+        api._blockSelect.value =
+          (tag === 'H1' || tag === 'H2' || tag === 'H3' || tag === 'BLOCKQUOTE' || tag === 'PRE') ? tag : 'P';
+      }
+    }
+  }
+
+  function onKeyDown(e) {
+    if (e.key === 'Shift') shiftDown = true;
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      manualSave();
+    }
+  }
+  function onKeyUp(e) { if (e.key === 'Shift') shiftDown = false; }
+  function onWinBlur() { shiftDown = false; }
+
+  // ---- Activate / deactivate the whole tool ----
+  // The bookmark (a second click) and the toolbar's "Turn off htmdoc" button
+  // both flip this. Deactivating restores the page exactly as it was found —
+  // no toolbar, no contentEditable, no listeners, no scope markers — so a page
+  // whose OWN scripts render its content (canvas charts, widgets) is left
+  // completely untouched by htmdoc.
+
+  api.activate = function () {
+    if (api.active) return;
     injectStyle();
     buildToolbar();
-    document.addEventListener('click', guardClicks, true);
-    document.body.addEventListener('input', scheduleSave);
-    // Show the table row/column buttons whenever the caret is in a table.
-    document.addEventListener('selectionchange', function () {
-      var cell = currentCell();
-      api._cell = cell;
-      if (api._tableGrp) api._tableGrp.classList.toggle('me-on', !!cell && api.enabled);
-      // Mirror B/I/U/S "on" state from the selection so inherited bold/italic
-      // (headings, <strong>, <em>) is visible rather than silently toggled off.
-      if (api._fmtButtons) {
-        for (var fi = 0; fi < api._fmtButtons.length; fi++) {
-          var fb = api._fmtButtons[fi];
-          var on = false;
-          try { on = api.enabled && document.queryCommandState(fb.cmd); } catch (e) {}
-          fb.b.classList.toggle('me-active', on);
-          fb.b.setAttribute('aria-pressed', on ? 'true' : 'false');
-        }
-      }
-      // Reflect the current block's style in the paragraph-style dropdown.
-      if (api._blockSelect) {
-        var s = window.getSelection();
-        var anchor = s && s.anchorNode;
-        var el = anchor && (anchor.nodeType === 1 ? anchor : anchor.parentElement);
-        if (el && !insideEditorUi(el)) {
-          var blk = blockOf(el);
-          var tag = blk ? blk.tagName : '';
-          api._blockSelect.value =
-            (tag === 'H1' || tag === 'H2' || tag === 'H3' || tag === 'BLOCKQUOTE' || tag === 'PRE') ? tag : 'P';
-        }
-      }
-    });
-    document.addEventListener('keydown', function (e) {
-      if (e.key === 'Shift') shiftDown = true;
-      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 's') {
-        e.preventDefault();
-        manualSave();
-      }
-    });
-    document.addEventListener('keyup', function (e) { if (e.key === 'Shift') shiftDown = false; });
-    window.addEventListener('blur', function () { shiftDown = false; });
-    document.addEventListener('paste', handlePaste, true);
-    window.addEventListener('pagehide', flushOnUnload);
-    // Keep the scope outlines / legend current as the DOM changes (insert,
-    // paste, table edits). childList only, debounced — markUneditables mutates
-    // attributes (titles), so observing attributes would loop.
+    on(document, 'click', guardClicks, true);
+    on(document.body, 'input', scheduleSave);
+    on(document, 'selectionchange', onSelectionChange);
+    on(document, 'keydown', onKeyDown);
+    on(document, 'keyup', onKeyUp);
+    on(window, 'blur', onWinBlur);
+    on(document, 'paste', handlePaste, true);
+    on(window, 'pagehide', flushOnUnload);
+    // Keep the scope outlines / legend current as the DOM changes. childList
+    // only, debounced — markUneditables mutates titles, so observing attributes
+    // would loop.
     if (typeof MutationObserver !== 'undefined') {
-      var scopeTimer = null;
-      new MutationObserver(function () {
+      api._observer = new MutationObserver(function () {
         if (!api.enabled) return;
-        clearTimeout(scopeTimer);
-        scopeTimer = setTimeout(refreshScopeMarks, 400);
-      }).observe(document.body, { childList: true, subtree: true });
+        clearTimeout(api._scopeTimer);
+        api._scopeTimer = setTimeout(refreshScopeMarks, 400);
+      });
+      api._observer.observe(document.body, { childList: true, subtree: true });
     }
     // Snapshot the initial serialization so an unedited page never triggers a
     // (no-op) save that would churn history.
@@ -1378,6 +1401,40 @@
     markUneditables();
     updateLegend();
     detectGenerated();
-    api.enable(); // editable immediately on render
-  });
+    api.active = true;
+    api.enable(); // editable immediately
+  };
+
+  api.deactivate = function () {
+    if (!api.active) return;
+    api.disable();                        // stop editing; flush any pending save
+    if (api._observer) { api._observer.disconnect(); api._observer = null; }
+    offAll();                             // remove every listener we registered
+    ['me-toolbar', 'me-style', 'me-svgedit', 'me-panel', 'me-chip'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el && el.parentNode) el.parentNode.removeChild(el);
+    });
+    // Undo the scope markers so the page is exactly as we found it.
+    var titled = document.querySelectorAll('[data-me-titled]');
+    for (var i = 0; i < titled.length; i++) {
+      titled[i].removeAttribute('title');
+      titled[i].removeAttribute('data-me-titled');
+    }
+    var gen = document.querySelectorAll('.me-generated');
+    for (var j = 0; j < gen.length; j++) {
+      gen[j].classList.remove('me-generated');
+      if (!gen[j].getAttribute('class')) gen[j].removeAttribute('class');
+    }
+    document.body.classList.remove('me-editing');
+    document.body.removeAttribute('contenteditable');
+    api._bar = api._chip = api._statusEl = api._toggleBtn = null;
+    api._blockSelect = api._tableGrp = api._fmtButtons = null;
+    api.active = false;
+  };
+
+  api.toggleHtmdoc = function () {
+    api.active ? api.deactivate() : api.activate();
+  };
+
+  onReady(function () { api.activate(); });
 })();
