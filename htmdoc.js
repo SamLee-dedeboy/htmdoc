@@ -1125,7 +1125,7 @@
       });
       return wrap;
     }
-    row.appendChild(colorControl('foreColor', '#d70015', 'Text color (select text first)', false));
+    row.appendChild(colorControl('foreColor', '#ffd60a', 'Text color (select text first)', false));
     row.appendChild(colorControl('hiliteColor', '#ffe45c', 'Highlight color (select text first)', true));
 
     row.appendChild(save);
