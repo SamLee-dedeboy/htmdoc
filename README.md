@@ -3,6 +3,10 @@
 **Open any HTML file on your computer and edit it like a
 document.**
 
+![The bundled demo page open in the browser with htmdoc's editor active — a floating dark toolbar (Editing: ON, a paragraph-style menu, bold/italic/underline/strikethrough, text and highlight color, Save with an "Auto-save: on" status, plus Insert, Find, History and a not-editable / partly-editable legend) hovers over a normally-rendered HTML document.](docs/demo.png)
+
+*Editing the included `demo.html` right in the browser — click anywhere, type, and every change saves itself straight back to the file.*
+
 Built for people who create and share static HTML with AI agents all the
 time. Agents get you 95% of the way: a polished report, a dashboard, a
 data story, but the last 5% is surgical. Round-
