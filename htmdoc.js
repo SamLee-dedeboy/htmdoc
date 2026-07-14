@@ -1137,14 +1137,23 @@
       input.setAttribute('aria-label', titleText);
       wrap.appendChild(input);
       wrap.addEventListener('mousedown', rememberSelection);
-      input.addEventListener('change', function () {
+      // Apply the color LIVE. A native color picker fires 'input' continuously
+      // while you drag, so the selection recolors in real time — you choose by
+      // watching the text, not by guessing and closing the dialog ('change'
+      // fires only on close). Re-capture the selection after each application:
+      // execCommand wraps it in a fresh span and detaches the previous range,
+      // so the next drag step must target the newly-wrapped text.
+      function apply() {
         restoreSelection();
         document.execCommand(command, false, input.value);
+        rememberSelection();
         // The highlight swatch follows the picked color; the text-color
         // indicator stays fixed so it can't become an unreadable dark "A".
         if (isHighlight) glyph.style.background = input.value;
-        scheduleSave();
-      });
+        scheduleSave(); // debounced, so a whole drag collapses to one save
+      }
+      input.addEventListener('input', apply);
+      input.addEventListener('change', apply);
       return wrap;
     }
     // Text: apply a document-friendly dark red by default (readable on white
