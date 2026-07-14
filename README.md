@@ -7,12 +7,12 @@ document.**
 
 *Editing a page right in the browser — type anywhere, add a little formatting, and every change saves itself straight back to the file.*
 
-Built for people who create and share static HTML with AI agents all the
-time. Agents get you 95% of the way: a polished report, a dashboard, a
-data story, but the last 5% is surgical. Round-
-tripping through prompt for a two-word fix is slow and can
-touch things you didn't ask it to. htmdoc is that missing last step: open
-the html in the browser, and edit it like a Word document.
+> Built for people who create and share static HTML with AI agents all the
+> time. Agents get you 95% of the way: a polished report, a dashboard, a
+> data story, but **the last 5% is surgical**. Round-tripping through prompt
+> for a two-word fix is slow and can touch things you didn't ask it to.
+> htmdoc is that missing last step:
+> **open the html in the browser, and edit it like a Word document**.
 
 ## Setup (once)
 
