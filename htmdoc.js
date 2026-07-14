@@ -124,6 +124,8 @@
       '#' + TOOLBAR_ID + ' .me-color:focus-within,#' + PANEL_ID + ' button:focus-visible,',
       '#' + PANEL_ID + ' input:focus-visible{outline:2px solid #4da3ff;outline-offset:1px;}',
       '#' + TOOLBAR_ID + ' button.me-on{background:#34c759;color:#0a2a12;font-weight:600;}',
+      // A format button (B/I/U/S) whose formatting is active on the selection.
+      '#' + TOOLBAR_ID + ' button.me-active{background:#0a84ff;color:#fff;}',
       '#' + TOOLBAR_ID + ' .me-fmt{font-weight:700;min-width:14px;text-align:center;}',
       '#' + TOOLBAR_ID + ' .me-status{color:rgba(255,255,255,.75);padding:0 4px;min-width:52px;text-align:center;}',
       '#' + TOOLBAR_ID + ' .me-min{padding:4px 7px;color:rgba(255,255,255,.7);}',
@@ -1029,6 +1031,15 @@
     toggle.setAttribute('aria-pressed', 'false');
     toggle.addEventListener('click', function () { api.toggle(); });
 
+    // Buttons whose "on" state we mirror from the current selection (updated in
+    // the selectionchange handler). Showing this is what lets you add italic to
+    // an already-bold heading — or bold to an <em> — without wondering why: the
+    // button reads as already-on, so you don't click it and accidentally toggle
+    // OFF the weight/style the element inherits (execCommand keys its toggle on
+    // the *computed* style, so B on a heading would otherwise un-bold it).
+    var STATE_CMDS = { bold: 1, italic: 1, underline: 1, strikeThrough: 1 };
+    api._fmtButtons = [];
+
     // NOTE: formatting rides on document.execCommand, which is deprecated but
     // still broadly supported and remains the only one-call way to apply rich
     // formatting to a Selection across browsers. A replacement would be a
@@ -1039,6 +1050,10 @@
       b.textContent = label;
       b.title = titleText;
       b.setAttribute('aria-label', titleText);
+      if (STATE_CMDS[command]) {
+        b.setAttribute('aria-pressed', 'false');
+        api._fmtButtons.push({ b: b, cmd: command });
+      }
       // mousedown + preventDefault so the text selection is not lost
       b.addEventListener('mousedown', function (e) {
         e.preventDefault();
@@ -1301,6 +1316,17 @@
       var cell = currentCell();
       api._cell = cell;
       if (api._tableGrp) api._tableGrp.classList.toggle('me-on', !!cell && api.enabled);
+      // Mirror B/I/U/S "on" state from the selection so inherited bold/italic
+      // (headings, <strong>, <em>) is visible rather than silently toggled off.
+      if (api._fmtButtons) {
+        for (var fi = 0; fi < api._fmtButtons.length; fi++) {
+          var fb = api._fmtButtons[fi];
+          var on = false;
+          try { on = api.enabled && document.queryCommandState(fb.cmd); } catch (e) {}
+          fb.b.classList.toggle('me-active', on);
+          fb.b.setAttribute('aria-pressed', on ? 'true' : 'false');
+        }
+      }
       // Reflect the current block's style in the paragraph-style dropdown.
       if (api._blockSelect) {
         var s = window.getSelection();
