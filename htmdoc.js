@@ -1097,18 +1097,24 @@
     row.appendChild(fmtButton('U', 'underline', 'Underline'));
     row.appendChild(fmtButton('S', 'strikeThrough', 'Strikethrough'));
 
-    // Text color: the "A" itself is colored. Highlight: "A" sits on a
-    // colored swatch. The indicator doubles as the current-color display —
-    // the convention Word and Google Docs use.
-    function colorControl(command, initial, titleText, isHighlight) {
+    // Color controls. For TEXT color the indicator color and the applied color
+    // are deliberately decoupled: the "A" must stay legible on the DARK toolbar
+    // (a light yellow), while the color it applies must stay legible on a
+    // typically-LIGHT document (a dark red). Picking a color applies it but
+    // leaves the indicator its fixed readable color, so a dark pick can't make
+    // the "A" vanish against the toolbar. HIGHLIGHT has no such tension — its
+    // swatch shows the color as a background, readable at any value — so its
+    // indicator tracks the picked color, and glyphColor defaults to `initial`.
+    function colorControl(command, initial, titleText, isHighlight, glyphColor) {
+      glyphColor = glyphColor || initial;
       var wrap = document.createElement('span');
       wrap.className = 'me-color' + (isHighlight ? ' me-hl' : '');
       wrap.title = titleText;
       var glyph = document.createElement('span');
       glyph.className = 'me-glyph';
       glyph.textContent = 'A';
-      if (isHighlight) glyph.style.background = initial;
-      else glyph.style.color = initial;
+      if (isHighlight) glyph.style.background = glyphColor;
+      else glyph.style.color = glyphColor;
       wrap.appendChild(glyph);
       var input = document.createElement('input');
       input.type = 'color';
@@ -1119,13 +1125,16 @@
       input.addEventListener('change', function () {
         restoreSelection();
         document.execCommand(command, false, input.value);
+        // The highlight swatch follows the picked color; the text-color
+        // indicator stays fixed so it can't become an unreadable dark "A".
         if (isHighlight) glyph.style.background = input.value;
-        else glyph.style.color = input.value;
         scheduleSave();
       });
       return wrap;
     }
-    row.appendChild(colorControl('foreColor', '#ffd60a', 'Text color (select text first)', false));
+    // Text: apply a document-friendly dark red by default (readable on white
+    // pages), but show a yellow "A" that stays legible on the dark toolbar.
+    row.appendChild(colorControl('foreColor', '#d70015', 'Text color (select text first)', false, '#ffd60a'));
     row.appendChild(colorControl('hiliteColor', '#ffe45c', 'Highlight color (select text first)', true));
 
     row.appendChild(save);
