@@ -108,6 +108,14 @@
       '#' + PANEL_ID + ' label{display:flex;align-items:center;gap:8px;font-size:12px;color:rgba(255,255,255,.8);}',
       '#' + PANEL_ID + ' input[type="text"]{flex:1;font:inherit;padding:3px 6px;border-radius:5px;',
       'border:1px solid rgba(255,255,255,.25);background:rgba(255,255,255,.08);color:#fff;outline:none;}',
+      '#' + PANEL_ID + '.me-prompt{min-width:0;width:360px;max-width:calc(100vw - 16px);box-sizing:border-box;}',
+      '#' + PANEL_ID + ' .me-prompt-target{font-size:12px;color:rgba(255,255,255,.9);',
+      'background:rgba(255,255,255,.08);padding:5px 8px;border-radius:6px;word-break:break-word;}',
+      '#' + PANEL_ID + ' .me-prompt-label{font-size:12px;color:rgba(255,255,255,.8);}',
+      '#' + PANEL_ID + ' textarea.me-prompt-input{font:inherit;font-size:13px;padding:6px 8px;',
+      'border-radius:6px;border:1px solid rgba(255,255,255,.25);background:rgba(255,255,255,.08);',
+      'color:#fff;outline:none;resize:vertical;width:100%;box-sizing:border-box;}',
+      '#' + PANEL_ID + ' .me-prompt-result{font-size:12px;color:rgba(255,255,255,.7);min-height:14px;}',
       '#' + PANEL_ID + ' .me-actions{display:flex;gap:6px;justify-content:flex-end;margin-top:2px;}',
       '#' + PANEL_ID + ' button{all:unset;cursor:pointer;padding:3px 12px;border-radius:6px;',
       'background:rgba(255,255,255,.14);font:inherit;}',
@@ -142,6 +150,11 @@
       '#me-chip:hover{background:rgba(50,50,54,.95);}',
       'body.me-editing :hover{outline:1px dashed rgba(0,122,255,.55);outline-offset:1px;}',
       'body.me-editing #' + TOOLBAR_ID + ' :hover{outline:none;}',
+      // "Prompt" pick mode: crosshair + a solid highlight on the hovered element.
+      'body.me-picking,body.me-picking *{cursor:crosshair !important;}',
+      'body.me-picking :hover{outline:2px solid #0a84ff !important;outline-offset:1px;}',
+      'body.me-picking #' + TOOLBAR_ID + ' :hover,body.me-picking #' + TOOLBAR_ID + '{outline:none !important;}',
+      'body.me-picking #' + TOOLBAR_ID + ',body.me-picking #' + TOOLBAR_ID + ' *{cursor:pointer !important;}',
       // While editing, elements the tool can't (fully) edit carry their own
       // indicators: red = not editable / not saved, amber = partly editable.
       'body.me-editing canvas,body.me-editing video,body.me-editing audio,',
@@ -418,6 +431,15 @@
     var t = e.target;
     if (!t || !t.closest) return;
     if (insideEditorUi(t)) return; // toolbar/panels always just work
+    if (api._pickMode) {
+      // "Prompt" mode: the next click picks an element to reference rather than
+      // editing it. Grab it and open the agent-prompt panel.
+      e.preventDefault();
+      e.stopPropagation();
+      setPickMode(false);
+      openPromptPanel(t);
+      return;
+    }
     if (e.metaKey || e.ctrlKey) {
       // contentEditable suppresses link navigation even for modifier clicks,
       // so follow the link ourselves — in a new tab, keeping the edits.
@@ -1022,6 +1044,159 @@
     scheduleSave();
   }
 
+  // ---- Reference an element in an agent prompt ----
+  // "Prompt" mode lets you click an element and build a copy-paste instruction
+  // for a coding agent to change it. The element is referenced three ways so an
+  // agent working on the SOURCE FILE can locate it reliably: its current HTML
+  // (the strongest anchor), a CSS selector, and a text excerpt to grep.
+
+  function cssEscape(s) {
+    if (window.CSS && CSS.escape) return CSS.escape(s);
+    return String(s).replace(/[^a-zA-Z0-9_-]/g, function (c) { return '\\' + c; });
+  }
+
+  // Prefer #id; otherwise a short structural path with :nth-of-type where a tag
+  // repeats among siblings. Kept to ~5 levels so it stays readable.
+  function cssSelectorFor(el) {
+    if (el.id) return '#' + cssEscape(el.id);
+    var parts = [];
+    var node = el;
+    while (node && node.nodeType === 1 && node !== document.body &&
+           node !== document.documentElement && parts.length < 5) {
+      if (node.id) { parts.unshift('#' + cssEscape(node.id)); break; }
+      var seg = node.tagName.toLowerCase();
+      var cls = (node.classList && node.classList.length) ? node.classList[0] : '';
+      var parent = node.parentElement;
+      if (cls) {
+        seg += '.' + cssEscape(cls);
+      } else if (parent) {
+        var same = [];
+        for (var i = 0; i < parent.children.length; i++) {
+          if (parent.children[i].tagName === node.tagName) same.push(parent.children[i]);
+        }
+        if (same.length > 1) seg += ':nth-of-type(' + (same.indexOf(node) + 1) + ')';
+      }
+      parts.unshift(seg);
+      node = parent;
+    }
+    return parts.join(' > ') || el.tagName.toLowerCase();
+  }
+
+  function describeElement(el) {
+    var text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+    if (text.length > 120) text = text.slice(0, 120) + '…';
+    var html = el.outerHTML || '';
+    if (html.length > 600) html = html.slice(0, 600) + '\n…(truncated)';
+    return {
+      tag: el.tagName.toLowerCase(),
+      id: el.id || '',
+      selector: cssSelectorFor(el),
+      text: text,
+      html: html
+    };
+  }
+
+  function buildAgentPrompt(desc, instruction) {
+    var L = [];
+    L.push('In `' + currentFileName() + '`, change one element as described below.');
+    L.push('');
+    L.push('Change to make: ' + (instruction.trim() || '(describe the change here)'));
+    L.push('');
+    L.push('Which element — a `<' + desc.tag + '>`, locate it by its current markup:');
+    L.push('```html');
+    L.push(desc.html);
+    L.push('```');
+    L.push('CSS selector: `' + desc.selector + '`');
+    if (desc.text) L.push('Current text: "' + desc.text + '"');
+    return L.join('\n');
+  }
+
+  function copyText(text) {
+    // clipboard API needs a secure context (works on http://localhost, not on
+    // file://) — fall back to a hidden textarea + execCommand there.
+    if (navigator.clipboard && navigator.clipboard.writeText && window.isSecureContext) {
+      return navigator.clipboard.writeText(text).catch(function () { return legacyCopy(text); });
+    }
+    return Promise.resolve(legacyCopy(text));
+  }
+  function legacyCopy(text) {
+    var t = document.createElement('textarea');
+    t.value = text;
+    t.setAttribute('contenteditable', 'false');
+    t.style.cssText = 'position:fixed;top:-2000px;left:-2000px;opacity:0;';
+    document.body.appendChild(t);
+    t.focus(); t.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) {}
+    t.remove();
+    return ok;
+  }
+
+  function openPromptPanel(el) {
+    var desc = describeElement(el);
+    var rect = el.getBoundingClientRect();
+    var panel = openPanel(rect.left, rect.bottom + 8);
+    panel.classList.add('me-prompt');
+
+    var target = document.createElement('div');
+    target.className = 'me-prompt-target';
+    var teaser = desc.text ? ' — "' + (desc.text.length > 46 ? desc.text.slice(0, 46) + '…' : desc.text) + '"' : '';
+    target.textContent = 'Referencing  <' + desc.tag + '>' + (desc.id ? ' #' + desc.id : '') + teaser;
+    panel.appendChild(target);
+
+    var lbl = document.createElement('div');
+    lbl.className = 'me-prompt-label';
+    lbl.textContent = 'Tell a coding agent what to change:';
+    panel.appendChild(lbl);
+
+    var ta = document.createElement('textarea');
+    ta.className = 'me-prompt-input';
+    ta.rows = 3;
+    ta.placeholder = 'e.g. Make this heading larger and use the brand blue (#0a58c2).';
+    panel.appendChild(ta);
+
+    var result = document.createElement('div');
+    result.className = 'me-prompt-result';
+    panel.appendChild(result);
+
+    var row = document.createElement('div');
+    row.className = 'me-actions';
+    var close = document.createElement('button');
+    close.textContent = 'Close';
+    close.addEventListener('click', closePanel);
+    var copy = document.createElement('button');
+    copy.className = 'me-primary';
+    copy.textContent = 'Copy prompt';
+    copy.addEventListener('click', function () {
+      Promise.resolve(copyText(buildAgentPrompt(desc, ta.value))).then(function (ok) {
+        result.textContent = (ok === false)
+          ? 'Copy failed — select the text manually.'
+          : 'Copied ✓  Paste it into your coding agent.';
+      });
+    });
+    row.appendChild(close);
+    row.appendChild(copy);
+    panel.appendChild(row);
+    // Keep the panel on-screen even if the picked element sits near an edge.
+    var box = panel.getBoundingClientRect();
+    if (box.right > window.innerWidth - 8) {
+      panel.style.left = Math.max(8, window.innerWidth - box.width - 8) + 'px';
+    }
+    if (box.bottom > window.innerHeight - 8) {
+      panel.style.top = Math.max(8, window.innerHeight - box.height - 8) + 'px';
+    }
+    ta.focus();
+  }
+
+  function setPickMode(on) {
+    api._pickMode = on;
+    document.body.classList.toggle('me-picking', on);
+    if (api._promptBtn) {
+      api._promptBtn.classList.toggle('me-on', on);
+      api._promptBtn.textContent = on ? 'Pick an element…' : 'Prompt';
+    }
+  }
+
   // ---- Toolbar ----
 
   function buildToolbar() {
@@ -1226,6 +1401,14 @@
     histBtn.addEventListener('click', openHistoryPanel);
     row2.appendChild(histBtn);
 
+    var promptBtn = document.createElement('button');
+    promptBtn.textContent = 'Prompt';
+    promptBtn.title = 'Pick an element, then build a copy-paste prompt asking a coding agent to change it';
+    promptBtn.setAttribute('aria-label', 'Build a coding-agent prompt for an element');
+    promptBtn.addEventListener('click', function () { setPickMode(!api._pickMode); });
+    row2.appendChild(promptBtn);
+    api._promptBtn = promptBtn;
+
     var tgrp = document.createElement('span');
     tgrp.className = 'me-tablegrp';
     [['+Row', 'addRow', 'Insert a row below'], ['−Row', 'delRow', 'Delete this row'],
@@ -1356,6 +1539,7 @@
 
   function onKeyDown(e) {
     if (e.key === 'Shift') shiftDown = true;
+    if (e.key === 'Escape' && api._pickMode) setPickMode(false);
     if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 's') {
       e.preventDefault();
       manualSave();
@@ -1426,9 +1610,11 @@
       if (!gen[j].getAttribute('class')) gen[j].removeAttribute('class');
     }
     document.body.classList.remove('me-editing');
+    document.body.classList.remove('me-picking');
     document.body.removeAttribute('contenteditable');
+    api._pickMode = false;
     api._bar = api._chip = api._statusEl = api._toggleBtn = null;
-    api._blockSelect = api._tableGrp = api._fmtButtons = null;
+    api._blockSelect = api._tableGrp = api._fmtButtons = api._promptBtn = null;
     api.active = false;
   };
 
